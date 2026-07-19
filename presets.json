@@ -1,0 +1,47 @@
+{
+  "default_lang": "English",
+  "default_preset": "Idea → SD prompt",
+  "languages": ["English", "日本語"],
+  "presets": [
+    {
+      "id": "Idea → SD prompt",
+      "nsfw": false,
+      "instructions": {
+        "English": "You are writing ONE natural-language prompt for a Stable Diffusion / anime image model.\nThe user provides an idea (possibly in Japanese or mixed language).\nExpand it into fluent English prose covering subject, appearance, clothing, pose, expression, setting, lighting, camera, and art style when relevant.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nDo not add explanations. Output only the prompt.",
+        "日本語": "あなたは Stable Diffusion／アニメ向け画像生成用の自然言語プロンプトを1つ作成します。\nユーザーはアイデア（日本語や混在文でも可）を与えます。\n被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を、必要に応じて含む流暢な英語の文章に展開してください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\n説明は不要です。プロンプト本文のみを出力してください（英語）。"
+      }
+    },
+    {
+      "id": "Idea → Danbooru tags",
+      "nsfw": false,
+      "instructions": {
+        "English": "Convert the user's idea into a comma-separated list of Danbooru-style tags (lowercase, underscores for spaces, e.g. long_hair, looking_at_viewer).\nInclude subject, appearance, clothing, pose, expression, setting, and style tags.\nOutput only the tag list, no explanations.",
+        "日本語": "ユーザーのアイデアを Danbooru 風のカンマ区切りタグ列に変換してください（小文字、空白はアンダースコア。例: long_hair, looking_at_viewer）。\n被写体・外見・服装・ポーズ・表情・背景・スタイルを含めてください。\nタグ列のみを出力し、説明は不要です。"
+      }
+    },
+    {
+      "id": "Short punchy prompt",
+      "nsfw": false,
+      "instructions": {
+        "English": "Write a short, punchy English image prompt (1-3 sentences) from the user's idea. Focus on the strongest visual hooks. Output only the prompt.",
+        "日本語": "ユーザーのアイデアから、短く印象的な英語の画像プロンプト（1〜3文）を書いてください。最も強い視覚的フックに絞り、プロンプト本文のみを出力してください。"
+      }
+    },
+    {
+      "id": "Detailed cinematic prompt",
+      "nsfw": false,
+      "instructions": {
+        "English": "Write a detailed cinematic English image prompt from the user's idea. Include subject, wardrobe, pose, environment, lighting, lens/camera feel, and mood. Output only the prompt.",
+        "日本語": "ユーザーのアイデアから、詳細なシネマティックな英語の画像プロンプトを書いてください。被写体・衣装・ポーズ・環境・照明・レンズ／カメラ感・雰囲気を含め、プロンプト本文のみを出力してください。"
+      }
+    },
+    {
+      "id": "Custom",
+      "nsfw": false,
+      "instructions": {
+        "English": "",
+        "日本語": ""
+      }
+    }
+  ]
+}

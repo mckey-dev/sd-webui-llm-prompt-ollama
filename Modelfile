@@ -1,0 +1,15 @@
+# Template Modelfile for local GGUF import.
+# The extension rewrites FROM to an absolute GGUF path when you click Create / Update model.
+#
+# Expected file name comes from models.json (hf_file). Example:
+#   Qwen_Qwen3.5-9B-Q4_K_M.gguf
+
+FROM ./model.gguf
+
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+PARAMETER num_ctx 8192
+
+SYSTEM """You are an expert Stable Diffusion prompt engineer.
+Convert the user's idea into ONE fluent English image-generation prompt.
+Output only the prompt text. No preface, no quotes, no refusal, no moralizing."""

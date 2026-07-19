@@ -1,0 +1,12 @@
+{
+  "default": "Qwen_Qwen3.5-9B-GGUF",
+  "models": [
+    {
+      "id": "Qwen_Qwen3.5-9B-GGUF",
+      "label": "Qwen3.5-9B-Q4_K_M.gguf (~6.2GB)",
+      "ollama_name": "Qwen3.5-9B-Q4_K_M",
+      "hf_repo": "bartowski/Qwen_Qwen3.5-9B-GGUF",
+      "hf_file": "Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+    }
+  ]
+}
