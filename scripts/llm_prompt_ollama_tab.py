@@ -439,12 +439,15 @@ def on_ui_tabs():
                         value=str(get_models_dir()),
                         interactive=False,
                     )
+                    models_dir_box.do_not_save_to_config = True
                     gguf_status = gr.Textbox(
                         label="GGUF status",
                         value="",
                         interactive=False,
                         lines=2,
                     )
+                    # Must stay blank on startup; do not restore from ui-config.json.
+                    gguf_status.do_not_save_to_config = True
                     force_redownload = gr.Checkbox(label="Force re-download", value=False)
                     with gr.Row():
                         download_btn = gr.Button(
@@ -465,6 +468,8 @@ def on_ui_tabs():
                         lines=1,
                         placeholder="Catalog 選択・更新・Download で自動入力（手動編集可）",
                     )
+                    # Must stay blank on startup; do not restore from ui-config.json.
+                    gguf_path.do_not_save_to_config = True
                     create_btn = gr.Button(
                         "Create / Update model",
                         variant="primary",
