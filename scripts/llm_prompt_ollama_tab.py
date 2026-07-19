@@ -46,6 +46,7 @@ from llm_prompt_ollama.presets import (
     LANG_CHOICES,
     PRESET_CHOICES,
     instruction_for_preset,
+    reload_presets_catalog,
 )
 
 
@@ -202,6 +203,29 @@ def _on_lang_change(lang: str, preset: str, _current: str):
     if preset == "Custom":
         return gr.update()
     return instruction_for_preset(preset, lang)
+
+
+# ================================================================================
+# presets.json を再読み込みし言語・プリセット・Instruction を更新する
+# ================================================================================
+def _refresh_presets(current_preset: str, current_lang: str):
+    catalog = reload_presets_catalog()
+    choices = [p["id"] for p in catalog["presets"]]
+    langs = list(catalog["languages"])
+    default_preset = str(catalog["default_preset"])
+    default_lang = str(catalog["default_lang"])
+    preset = current_preset if current_preset in choices else default_preset
+    lang = current_lang if current_lang in langs else default_lang
+    # Custom keeps the edited instruction text; others sync from presets.json.
+    if preset == "Custom":
+        instruction = gr.update()
+    else:
+        instruction = instruction_for_preset(preset, lang)
+    return (
+        gr.update(choices=langs, value=lang),
+        gr.update(choices=choices, value=preset),
+        instruction,
+    )
 
 
 # ================================================================================
@@ -488,12 +512,15 @@ def on_ui_tabs():
                         value=DEFAULT_LANG,
                         label="Instruction language",
                     )
-                    preset = gr.Dropdown(
-                        label="Instruction preset",
-                        choices=PRESET_CHOICES,
-                        value=DEFAULT_PRESET,
-                        allow_custom_value=False,
-                    )
+                    with gr.Row():
+                        preset = gr.Dropdown(
+                            label="Instruction preset",
+                            choices=PRESET_CHOICES,
+                            value=DEFAULT_PRESET,
+                            allow_custom_value=False,
+                            scale=4,
+                        )
+                        refresh_presets_btn = gr.Button("更新", scale=1)
                     instruction = gr.Textbox(
                         label="Instruction (editable — use Custom to keep edits)",
                         lines=8,
@@ -549,6 +576,11 @@ def on_ui_tabs():
             fn=_on_lang_change,
             inputs=[lang, preset, instruction],
             outputs=[instruction],
+        )
+        refresh_presets_btn.click(
+            fn=_refresh_presets,
+            inputs=[preset, lang],
+            outputs=[lang, preset, instruction],
         )
         catalog_dd.change(
             fn=_on_catalog_change,
