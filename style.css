@@ -19,12 +19,3 @@
     margin-top: 0.25rem;
     margin-bottom: 0.5rem;
 }
-
-#llm_prompt_ollama_idea_copy_prompt_btn,
-#llm_prompt_ollama_idea_copy_prompt_btn button,
-#llm_prompt_ollama_vlm_copy_prompt_btn,
-#llm_prompt_ollama_vlm_copy_prompt_btn button {
-    visibility: visible !important;
-    display: inline-flex !important;
-    min-height: 2.5rem !important;
-}

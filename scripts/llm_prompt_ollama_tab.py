@@ -34,6 +34,7 @@ from llm_prompt_ollama.model_setup import (
     create_model,
     get_setting,
     start_ollama_serve,
+    restart_ollama_serve,
 )
 from llm_prompt_ollama.models_catalog import (
     choices_for_ui,
@@ -42,8 +43,15 @@ from llm_prompt_ollama.models_catalog import (
     has_catalog_models,
     reload_models_catalog,
     require_model,
+    catalog_ollama_names,
 )
-from llm_prompt_ollama.ollama_client import OllamaClient, OllamaError
+from llm_prompt_ollama.ollama_client import (
+    OllamaClient,
+    OllamaError,
+    format_full_connection_status,
+    model_names_equivalent,
+    pick_ollama_model_name,
+)
 from llm_prompt_ollama.presets import (
     DEFAULT_LANG,
     LANG_CHOICES,
@@ -73,6 +81,31 @@ def _api_url() -> str:
 # ================================================================================
 def _default_model() -> str:
     return get_setting(SETTING_DEFAULT_MODEL, DEFAULT_MODEL_NAME)
+
+
+# ================================================================================
+# Ollama モデル Dropdown の choices / value を更新内容に合わせる
+# ================================================================================
+def _model_dropdown_update(
+    preferred: str,
+    models: list[str],
+    *,
+    current: str | None = None,
+) -> gr.update:
+    pref = (preferred or "").strip() or _default_model()
+    choices = models or ([pref] if pref else [])
+    if current:
+        picked = pick_ollama_model_name(current, choices)
+        if picked:
+            return gr.update(choices=choices, value=picked)
+        if current in choices:
+            return gr.update(choices=choices, value=current)
+    picked = pick_ollama_model_name(pref, choices)
+    if picked:
+        return gr.update(choices=choices, value=picked)
+    if pref in choices:
+        return gr.update(choices=choices, value=pref)
+    return gr.update(choices=choices, value=choices[0] if choices else pref)
 
 
 # ================================================================================
@@ -279,16 +312,45 @@ def _refresh_presets_for(target: str, current_preset: str, current_lang: str):
 
 
 # ================================================================================
+# カタログ選択から優先 Ollama モデル名を返す
+# ================================================================================
+def _preferred_model_name(catalog_id: str | None) -> str:
+    entry = get_model(catalog_id) if catalog_id else None
+    if entry:
+        return entry["ollama_name"]
+    return _default_model()
+
+
+# ================================================================================
+# 接続 OK 時の status 文字列とモデル Dropdown 更新を返す
+# ================================================================================
+def _ollama_status_and_dropdown(
+    api_url: str,
+    catalog_id: str | None,
+    current_model: str | None,
+    *,
+    prefix: str | None = None,
+) -> tuple[str, gr.update]:
+    client = _client(api_url)
+    installed = client.list_models()
+    running = client.list_running_models()
+    status = format_full_connection_status(
+        client.base_url,
+        installed,
+        running,
+        catalog_ollama_names=catalog_ollama_names(),
+        prefix=prefix,
+    )
+    preferred = _preferred_model_name(catalog_id)
+    return status, _model_dropdown_update(preferred, installed, current=current_model or None)
+
+
+# ================================================================================
 # Ollama 接続確認とモデル一覧の更新を行う
 # ================================================================================
-def _check_connection(api_url: str):
+def _check_connection(api_url: str, catalog_id: str, model_name: str):
     try:
-        client = _client(api_url)
-        status = client.health()
-        models = client.list_models()
-        choices = models or [_default_model()]
-        value = _default_model() if _default_model() in choices else (choices[0] if choices else _default_model())
-        return status, gr.update(choices=choices, value=value)
+        return _ollama_status_and_dropdown(api_url, catalog_id, model_name)
     except OllamaError as e:
         help_text = connection_help(api_url or _api_url())
         return f"{e}\n\n{help_text}", gr.update()
@@ -300,20 +362,13 @@ def _check_connection(api_url: str):
 # ================================================================================
 # Ollama サーバーを起動しモデル一覧を更新する
 # ================================================================================
-def _start_ollama(api_url: str):
+def _start_ollama(api_url: str, catalog_id: str, model_name: str):
     try:
         msg = start_ollama_serve(
             api_url=api_url or _api_url(),
             ollama_bin=get_setting(SETTING_OLLAMA_BIN, "") or None,
         )
-        models = []
-        try:
-            models = _client(api_url).list_models()
-        except Exception:
-            pass
-        choices = models or [_default_model()]
-        value = _default_model() if _default_model() in choices else (choices[0] if choices else _default_model())
-        return msg, gr.update(choices=choices, value=value)
+        return msg, _ollama_status_and_dropdown(api_url, catalog_id, model_name)[1]
     except OllamaError as e:
         return str(e), gr.update()
     except Exception as e:
@@ -322,19 +377,75 @@ def _start_ollama(api_url: str):
 
 
 # ================================================================================
-# Ollama のモデル一覧を再取得する
+# Ollama サーバーを再起動しモデル一覧を更新する
 # ================================================================================
-def _refresh_models(api_url: str, current: str):
+def _restart_ollama(api_url: str, catalog_id: str, model_name: str):
     try:
-        models = _client(api_url).list_models()
-        choices = models or [current or _default_model()]
-        value = current if current in choices else (choices[0] if choices else _default_model())
-        return gr.update(choices=choices, value=value), f"Models refreshed ({len(models)})."
+        msg = restart_ollama_serve(
+            api_url=api_url or _api_url(),
+            ollama_bin=get_setting(SETTING_OLLAMA_BIN, "") or None,
+        )
+        return msg, _ollama_status_and_dropdown(api_url, catalog_id, model_name)[1]
     except OllamaError as e:
-        return gr.update(), f"Refresh failed: {e}\n\n{connection_help(api_url or _api_url())}"
+        return str(e), gr.update()
     except Exception as e:
         traceback.print_exc()
-        return gr.update(), f"Refresh failed: {e}"
+        return f"Restart failed: {e}", gr.update()
+
+
+# ================================================================================
+# メモリ上の全モデルをアンロードする
+# ================================================================================
+def _unload_all(api_url: str, catalog_id: str, model_name: str):
+    try:
+        client = _client(api_url)
+        running = client.list_running_models()
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in running:
+            n = str(item.get("name") or item.get("model") or "").strip()
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            names.append(n)
+        for n in names:
+            client.unload_model(n)
+        prefix = f"Unloaded {len(names)} model(s) from memory."
+        return _ollama_status_and_dropdown(api_url, catalog_id, model_name, prefix=prefix)
+    except OllamaError as e:
+        help_text = connection_help(api_url or _api_url())
+        return f"{e}\n\n{help_text}", gr.update()
+    except Exception as e:
+        traceback.print_exc()
+        return f"Unload failed: {e}", gr.update()
+
+
+# ================================================================================
+# 選択中の1モデルをメモリからアンロードする
+# ================================================================================
+def _unload_selected(api_url: str, catalog_id: str, model_name: str):
+    try:
+        selected = (model_name or "").strip()
+        if not selected:
+            raise ValueError("Select an Ollama model name first.")
+        client = _client(api_url)
+        running = client.list_running_models()
+        was_loaded = any(
+            model_names_equivalent(selected, str(item.get("name") or item.get("model") or ""))
+            for item in running
+        )
+        client.unload_model(selected)
+        if was_loaded:
+            prefix = f"Unloaded: {selected}"
+        else:
+            prefix = f"Unloaded: {selected} (was not loaded)"
+        return _ollama_status_and_dropdown(api_url, catalog_id, model_name, prefix=prefix)
+    except OllamaError as e:
+        help_text = connection_help(api_url or _api_url())
+        return f"{e}\n\n{help_text}", gr.update()
+    except Exception as e:
+        traceback.print_exc()
+        return f"Unload failed: {e}", gr.update()
 
 
 # ================================================================================
@@ -355,9 +466,9 @@ def _create_model(api_url: str, model_name: str, gguf_path: str, mmproj_path: st
             models = _client(api_url).list_models()
         except Exception:
             pass
-        choices = models or [model_name]
-        value = model_name if model_name in choices else (choices[0] if choices else model_name)
-        return msg, gr.update(choices=choices, value=value)
+        return msg, _model_dropdown_update(model_name, models, current=model_name)
+    except OllamaError as e:
+        return str(e), gr.update()
     except Exception as e:
         traceback.print_exc()
         return f"Create failed: {type(e).__name__}: {e}", gr.update()
@@ -583,8 +694,9 @@ def on_ui_tabs():
                     with gr.Row():
                         check_btn = gr.Button("Check connection", variant="primary")
                         start_btn = gr.Button("Start Ollama")
-                        refresh_btn = gr.Button("Refresh models")
-                    conn_status = gr.Textbox(label="Connection status", lines=6, interactive=False)
+                        restart_btn = gr.Button("Restart Ollama")
+                        unload_all_btn = gr.Button("Unload all from memory")
+                    conn_status = gr.Textbox(label="Connection status", lines=10, interactive=False)
 
                 with gr.Accordion("Model from local GGUF", open=True):
                     with gr.Row():
@@ -617,12 +729,15 @@ def on_ui_tabs():
                             interactive=has_catalog,
                         )
                         refresh_gguf_btn = gr.Button("↻ Status")
-                    model_name = gr.Dropdown(
-                        label="Ollama model name",
-                        choices=[initial_ollama] if initial_ollama else [],
-                        value=initial_ollama or None,
-                        allow_custom_value=True,
-                    )
+                    with gr.Row():
+                        model_name = gr.Dropdown(
+                            label="Ollama model name",
+                            choices=[initial_ollama] if initial_ollama else [],
+                            value=initial_ollama or None,
+                            allow_custom_value=True,
+                            scale=4,
+                        )
+                        unload_selected_btn = gr.Button("Unload selected model", scale=1)
                     gguf_path = gr.Textbox(
                         label="Local GGUF path",
                         value="",
@@ -688,13 +803,6 @@ def on_ui_tabs():
                             elem_id="llm_prompt_ollama_idea_generated_prompt",
                         )
                         with gr.Row(elem_id="llm_prompt_ollama_idea_prompt_actions"):
-                            idea_copy_btn = gr.Button(
-                                "Copy prompt",
-                                elem_id="llm_prompt_ollama_idea_copy_prompt_btn",
-                                scale=1,
-                                visible=True,
-                            )
-                            idea_copy_btn.do_not_save_to_config = True
                             idea_send_txt = gr.Button("Send to txt2img")
                             idea_send_img = gr.Button("Send to img2img")
                         idea_log = gr.Textbox(label="Log", lines=6, interactive=False)
@@ -765,13 +873,6 @@ def on_ui_tabs():
                             elem_id="llm_prompt_ollama_vlm_generated_prompt",
                         )
                         with gr.Row(elem_id="llm_prompt_ollama_vlm_prompt_actions"):
-                            vlm_copy_btn = gr.Button(
-                                "Copy prompt",
-                                elem_id="llm_prompt_ollama_vlm_copy_prompt_btn",
-                                scale=1,
-                                visible=True,
-                            )
-                            vlm_copy_btn.do_not_save_to_config = True
                             vlm_send_txt = gr.Button("Send to txt2img")
                             vlm_send_img = gr.Button("Send to img2img")
                         vlm_log = gr.Textbox(label="Log", lines=6, interactive=False)
@@ -789,17 +890,6 @@ def on_ui_tabs():
                     source_text_component=source,
                 )
             )
-
-        # ================================================================================
-        # クリップボードコピー結果のフィードバック文言を返す
-        # ================================================================================
-        def _copy_feedback(text: str):
-            if (text or "").strip():
-                return "Copied to clipboard."
-            return "Nothing to copy."
-
-        idea_copy_btn.click(fn=_copy_feedback, inputs=[idea_prompt], outputs=[idea_log])
-        vlm_copy_btn.click(fn=_copy_feedback, inputs=[vlm_prompt], outputs=[vlm_log])
 
         idea_preset.change(
             fn=_on_preset_change,
@@ -853,19 +943,32 @@ def on_ui_tabs():
         )
         check_btn.click(
             fn=_check_connection,
-            inputs=[api_url],
+            inputs=[api_url, catalog_dd, model_name],
             outputs=[conn_status, model_name],
         )
         start_btn.click(
             fn=_start_ollama,
-            inputs=[api_url],
+            inputs=[api_url, catalog_dd, model_name],
             outputs=[conn_status, model_name],
             show_progress=True,
         )
-        refresh_btn.click(
-            fn=_refresh_models,
-            inputs=[api_url, model_name],
-            outputs=[model_name, create_log],
+        restart_btn.click(
+            fn=_restart_ollama,
+            inputs=[api_url, catalog_dd, model_name],
+            outputs=[conn_status, model_name],
+            show_progress=True,
+        )
+        unload_all_btn.click(
+            fn=_unload_all,
+            inputs=[api_url, catalog_dd, model_name],
+            outputs=[conn_status, model_name],
+            show_progress=True,
+        )
+        unload_selected_btn.click(
+            fn=_unload_selected,
+            inputs=[api_url, catalog_dd, model_name],
+            outputs=[conn_status, model_name],
+            show_progress=True,
         )
         download_btn.click(
             fn=_download_gguf,

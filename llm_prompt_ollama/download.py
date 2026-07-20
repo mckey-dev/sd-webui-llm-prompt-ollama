@@ -8,7 +8,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .model_setup import get_setting
 from .models_catalog import default_model, require_model
 
 SETTING_MODELS_DIR = "llm_prompt_ollama_models_dir"
@@ -30,6 +29,8 @@ def default_models_dir() -> Path:
 # Settings 上書きを含む実効の GGUF 保存ディレクトリを返す
 # ================================================================================
 def get_models_dir() -> Path:
+    from .model_setup import get_setting
+
     custom = get_setting(SETTING_MODELS_DIR, "")
     if custom:
         return Path(custom).expanduser().resolve()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 from typing import Any
@@ -114,6 +115,188 @@ def _parse_response_body(raw: str) -> Any:
 
 
 # ================================================================================
+# Ollama モデル名から :latest 等のタグを除いたベース名を返す
+# ================================================================================
+def normalize_ollama_model_name(name: str) -> str:
+    n = (name or "").strip()
+    if not n:
+        return ""
+    if ":" in n:
+        base, tag = n.rsplit(":", 1)
+        if tag == "latest":
+            return base
+    return n
+
+
+# ================================================================================
+# 2 つの Ollama モデル名が同一モデルを指すか（タグ無視）を返す
+# ================================================================================
+def model_names_equivalent(a: str, b: str) -> bool:
+    na = normalize_ollama_model_name(a)
+    nb = normalize_ollama_model_name(b)
+    return bool(na) and na == nb
+
+
+# ================================================================================
+# 希望名に一致するインストール済みモデル名を返す（見つからなければ None）
+# ================================================================================
+def pick_ollama_model_name(preferred: str, installed: list[str]) -> str | None:
+    pref = (preferred or "").strip()
+    if not pref:
+        return None
+    if pref in installed:
+        return pref
+    for m in installed:
+        if model_names_equivalent(m, pref):
+            return m
+    return None
+
+
+# ================================================================================
+# バイト数を GiB 表示用の短い文字列にする
+# ================================================================================
+def _format_vram_gib(size_bytes: Any) -> str | None:
+    try:
+        n = int(size_bytes)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return f"{n / (1024 ** 3):.1f} GiB"
+
+
+# ================================================================================
+# expires_at を短い相対表記にする（失敗時は None）
+# ================================================================================
+def _format_expires_hint(expires_at: Any) -> str | None:
+    raw = (expires_at or "").strip() if isinstance(expires_at, str) else ""
+    if not raw:
+        return None
+    try:
+        normalized = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta = (dt - now).total_seconds()
+        if delta <= 0:
+            return "expires soon"
+        if delta < 120:
+            return f"expires ~{int(delta)}s"
+        if delta < 3600:
+            return f"expires ~{int(delta / 60)}m"
+        return f"expires ~{int(delta / 3600)}h"
+    except (ValueError, TypeError):
+        return None
+
+
+# ================================================================================
+# メモリ上にロードされているモデルの表示ブロック
+# ================================================================================
+def format_loaded_in_memory(running: list[dict[str, Any]] | None) -> str:
+    items = running or []
+    if not items:
+        return "Loaded in memory: (none)"
+    lines = ["Loaded in memory:"]
+    for item in items:
+        name = str(item.get("name") or item.get("model") or "?").strip()
+        parts: list[str] = []
+        vram = _format_vram_gib(item.get("size_vram"))
+        if vram:
+            parts.append(f"VRAM {vram}")
+        exp = _format_expires_hint(item.get("expires_at"))
+        if exp:
+            parts.append(exp)
+        if parts:
+            lines.append(f"{name} ({', '.join(parts)})")
+        else:
+            lines.append(f"{name} (in memory)")
+    return "\n".join(lines)
+
+
+# ================================================================================
+# インストール済みモデル（/api/tags）の表示ブロック
+# ================================================================================
+def format_installed_models_block(
+    models: list[str],
+    *,
+    catalog_ollama_names: list[str] | None = None,
+) -> str:
+    catalog = [c.strip() for c in (catalog_ollama_names or []) if (c or "").strip()]
+    if not models:
+        if catalog:
+            return "Catalog models (models.json): (none installed — Download / Create)"
+        return "Models: (none)"
+
+    catalog_hits: list[str] = []
+    other: list[str] = []
+    for m in models:
+        if catalog and any(model_names_equivalent(m, c) for c in catalog):
+            catalog_hits.append(m)
+        elif catalog:
+            other.append(m)
+
+    lines: list[str] = []
+    if catalog:
+        if catalog_hits:
+            lines.append("Catalog models (models.json):")
+            lines.extend(catalog_hits)
+        else:
+            lines.append("Catalog models (models.json): (none installed — Download / Create)")
+        if other:
+            lines.append("Other Ollama models:")
+            lines.extend(other)
+    else:
+        lines.append("Models:")
+        lines.extend(models)
+    return "\n".join(lines)
+
+
+# ================================================================================
+# Connection status 全文（OK + Loaded + Installed）
+# ================================================================================
+def format_full_connection_status(
+    base_url: str,
+    installed_models: list[str],
+    running_models: list[dict[str, Any]] | None,
+    *,
+    catalog_ollama_names: list[str] | None = None,
+    prefix: str | None = None,
+) -> str:
+    url = (base_url or "").rstrip("/")
+    chunks: list[str] = []
+    if prefix and prefix.strip():
+        chunks.append(prefix.strip())
+    chunks.append(f"OK — {url}")
+    chunks.append(format_loaded_in_memory(running_models))
+    chunks.append(
+        format_installed_models_block(
+            installed_models,
+            catalog_ollama_names=catalog_ollama_names,
+        )
+    )
+    return "\n\n".join(chunks)
+
+
+# ================================================================================
+# 接続 OK 時のステータス文言（後方互換；full status と同内容）
+# ================================================================================
+def format_connection_status(
+    base_url: str,
+    models: list[str],
+    *,
+    catalog_ollama_names: list[str] | None = None,
+    running_models: list[dict[str, Any]] | None = None,
+) -> str:
+    return format_full_connection_status(
+        base_url,
+        models,
+        running_models,
+        catalog_ollama_names=catalog_ollama_names,
+    )
+
+
+# ================================================================================
 # Ollama サーバーとの通信を行うクライアント
 # ================================================================================
 class OllamaClient:
@@ -167,10 +350,54 @@ class OllamaClient:
     # ================================================================================
     # 接続確認とモデル一覧の短いステータス文言を返す
     # ================================================================================
-    def health(self) -> str:
+    def health(self, *, catalog_ollama_names: list[str] | None = None, prefix: str | None = None) -> str:
         models = self.list_models()
-        names = ", ".join(models) if models else "(none)"
-        return f"OK — {self.base_url}\nModels: {names}"
+        running = self.list_running_models()
+        return format_full_connection_status(
+            self.base_url,
+            models,
+            running,
+            catalog_ollama_names=catalog_ollama_names,
+            prefix=prefix,
+        )
+
+    # ================================================================================
+    # メモリ上で実行中のモデル一覧（/api/ps）
+    # ================================================================================
+    def list_running_models(self) -> list[dict[str, Any]]:
+        data = self._request("GET", "/api/ps", timeout=15.0)
+        if not isinstance(data, dict):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in data.get("models") or []:
+            if isinstance(item, dict):
+                out.append(item)
+        return out
+
+    # ================================================================================
+    # 指定モデルをメモリからアンロードする（keep_alive: 0）
+    # ================================================================================
+    def unload_model(self, model: str) -> None:
+        name = (model or "").strip()
+        if not name:
+            raise OllamaError("Model name is empty.")
+        chat_payload: dict[str, Any] = {
+            "model": name,
+            "messages": [],
+            "keep_alive": 0,
+            "stream": False,
+        }
+        try:
+            self._request("POST", "/api/chat", chat_payload, timeout=120.0)
+            return
+        except OllamaError:
+            pass
+        gen_payload: dict[str, Any] = {
+            "model": name,
+            "keep_alive": 0,
+            "stream": False,
+        }
+        self._request("POST", "/api/generate", gen_payload, timeout=120.0)
 
     # ================================================================================
     # 登録済みモデル名の一覧を返す
