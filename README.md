@@ -113,7 +113,8 @@ Generate 後、モデルは既定でしばらくメモリに残ります（Ollam
 ## Idea / VLM
 
 - **Instruction preset** / **Instruction language** でシステム指示を選ぶ（**Custom** で自由記述）。
-- **Generate** 後、**Generated prompt** テキストボックス右上のコピーアイコン（Gradio 標準）でクリップボードへコピーできます。
+- **Custom** で Generate を押した直後（API 呼び出し前）に、Instruction を拡張直下の `presets-custom.json` へ **言語別** に保存します（Idea / VLM × English / 日本語。空は保存しない）。他言語の保存分は上書きしません。Generate 成否に関わらず残ります。次回 **Custom** 選択や言語切替で復元されます。
+- **Generate** 後、**Generated prompt** 右上のコピーアイコン（Gradio 標準）でクリップボードへコピーできます。
 - 詳細パラメータ（temperature 等）は各タブのアコーディオン内。
 - `presets.json` を編集したら **Instruction preset** 横の **更新** を押す。
 - `uncensored: true` のプリセットは **Settings → Show uncensored instruction presets** を ON にしないと一覧に出ません。
@@ -160,6 +161,36 @@ VLM タブ内の **Tag with WD Tagger** で、SmilingWolf V3 ONNX モデルを�
 
 JSON の構文エラーがあると、ファイル全体の読み込みに失敗することがあります。
 
+### presets-custom.json
+
+Custom で Generate を押した直後（API 呼び出し前）に自動作成・上書きされます（git 対象外）。Generate が失敗しても Instruction は残ります。**English / 日本語は別キーで保持**します。
+
+```json
+{
+  "idea": {
+    "instructions": {
+      "English": "...",
+      "日本語": "..."
+    },
+    "updated_at": "..."
+  },
+  "vlm": {
+    "instructions": {
+      "English": "..."
+    },
+    "updated_at": "..."
+  }
+}
+```
+
+| キー | 意味 |
+|------|------|
+| `idea` / `vlm` | タブ別 |
+| `instructions` | 言語 → Custom Instruction 本文 |
+| `updated_at` | 最終保存時刻 |
+
+`presets.json` は編集せずに残ります。
+
 ---
 
 ## Settings（LLM Prompt (Ollama)）
@@ -201,6 +232,7 @@ extensions/sd-webui-llm-prompt-ollama/
 ├── install.py              … Linux 向け Ollama 導入・serve 起動
 ├── models.json             … GGUF カタログ
 ├── presets.json            … Idea / VLM 指示プリセット
+├── presets-custom.json     … Custom の最終 Instruction（自動生成・git 対象外）
 ├── Modelfile               … Create 用テンプレート
 ├── scripts/
 │   └── llm_prompt_ollama_tab.py

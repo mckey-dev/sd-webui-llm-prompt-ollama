@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,13 @@ def _extension_root() -> Path:
 # ================================================================================
 def presets_json_path() -> Path:
     return _extension_root() / "presets.json"
+
+
+# ================================================================================
+# Custom 指示の永続化ファイル（presets-custom.json）のパスを返す
+# ================================================================================
+def presets_custom_json_path() -> Path:
+    return _extension_root() / "presets-custom.json"
 
 
 # ================================================================================
@@ -293,3 +301,90 @@ def instruction_for_preset(preset: str, lang: str = DEFAULT_LANG) -> str:
     if instructions:
         return str(next(iter(instructions.values())))
     return ""
+
+
+# ================================================================================
+# presets-custom.json を読み込む（無ければ空 dict）
+# ================================================================================
+def load_custom_instructions() -> dict[str, Any]:
+    path = presets_custom_json_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("idea", "vlm"):
+        block = data.get(key)
+        if not isinstance(block, dict):
+            continue
+        instructions: dict[str, str] = {}
+        raw_instr = block.get("instructions")
+        if isinstance(raw_instr, dict):
+            for lang, text in raw_instr.items():
+                lk = str(lang).strip()
+                tv = str(text or "").strip()
+                if lk and tv:
+                    instructions[lk] = tv
+        # Migrate legacy single-instruction format
+        legacy = str(block.get("instruction") or "").strip()
+        if legacy:
+            legacy_lang = str(block.get("lang") or "").strip() or DEFAULT_LANG
+            instructions.setdefault(legacy_lang, legacy)
+        if not instructions:
+            continue
+        entry: dict[str, Any] = {"instructions": instructions}
+        updated = str(block.get("updated_at") or "").strip()
+        if updated:
+            entry["updated_at"] = updated
+        out[key] = entry
+    return out
+
+
+# ================================================================================
+# 用途・言語向けに保存済み Custom Instruction 本文を返す
+# ================================================================================
+def get_custom_instruction(target: str, lang: str = "") -> str | None:
+    t = (target or "").strip().lower()
+    if t not in ("idea", "vlm"):
+        return None
+    block = load_custom_instructions().get(t)
+    if not isinstance(block, dict):
+        return None
+    instructions = block.get("instructions")
+    if not isinstance(instructions, dict):
+        return None
+    lang_key = (lang or "").strip() or DEFAULT_LANG
+    text = str(instructions.get(lang_key) or "").strip()
+    return text or None
+
+
+# ================================================================================
+# Custom Instruction を言語別に presets-custom.json へ保存する（他言語は維持）
+# ================================================================================
+def save_custom_instruction(target: str, instruction: str, lang: str = "") -> bool:
+    t = (target or "").strip().lower()
+    if t not in ("idea", "vlm"):
+        return False
+    text = (instruction or "").strip()
+    if not text:
+        return False
+    lang_key = (lang or "").strip() or DEFAULT_LANG
+
+    data = load_custom_instructions()
+    block = data.get(t) if isinstance(data.get(t), dict) else {}
+    instructions = dict(block.get("instructions") or {}) if isinstance(block, dict) else {}
+    instructions[lang_key] = text
+    data[t] = {
+        "instructions": instructions,
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    path = presets_custom_json_path()
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return True

@@ -56,9 +56,11 @@ from llm_prompt_ollama.presets import (
     DEFAULT_LANG,
     LANG_CHOICES,
     default_preset_for,
+    get_custom_instruction,
     instruction_for_preset,
     preset_choices_for,
     reload_presets_catalog,
+    save_custom_instruction,
 )
 from llm_prompt_ollama.wd_tagger import (
     DEFAULT_WD_REPO,
@@ -269,8 +271,11 @@ def _refresh_catalog(current_id: str):
 # ================================================================================
 # プリセット変更時にインストラクション文を差し替える
 # ================================================================================
-def _on_preset_change(preset: str, lang: str, _current: str):
+def _on_preset_change(preset: str, lang: str, _current: str, target: str = "idea"):
     if preset == "Custom":
+        saved = get_custom_instruction(target, lang)
+        if saved:
+            return saved
         return gr.update()
     return instruction_for_preset(preset, lang)
 
@@ -278,9 +283,10 @@ def _on_preset_change(preset: str, lang: str, _current: str):
 # ================================================================================
 # 言語変更時にインストラクション文を差し替える
 # ================================================================================
-def _on_lang_change(lang: str, preset: str, _current: str):
+def _on_lang_change(lang: str, preset: str, _current: str, target: str = "idea"):
     if preset == "Custom":
-        return gr.update()
+        saved = get_custom_instruction(target, lang)
+        return saved if saved else ""
     return instruction_for_preset(preset, lang)
 
 
@@ -301,7 +307,8 @@ def _refresh_presets_for(target: str, current_preset: str, current_lang: str):
     preset = current_preset if current_preset in choices else default_p
     lang = current_lang if current_lang in langs else (langs[0] if langs else DEFAULT_LANG)
     if preset == "Custom":
-        instruction = gr.update()
+        saved = get_custom_instruction(target, lang)
+        instruction = saved if saved else gr.update()
     else:
         instruction = instruction_for_preset(preset, lang)
     return (
@@ -483,11 +490,16 @@ def _generate_idea(
     idea: str,
     preset: str,
     instruction: str,
+    lang: str,
     temperature: float,
     top_p: float,
     num_predict: int,
 ):
     try:
+        saved_custom = False
+        if preset == "Custom":
+            saved_custom = save_custom_instruction("idea", instruction, lang)
+
         if not (idea or "").strip():
             raise ValueError("Idea text is empty.")
         if not (model_name or "").strip():
@@ -505,8 +517,14 @@ def _generate_idea(
             think=False,
         )
         if not (prompt or "").strip():
-            return "", "Done — but model returned empty text."
-        return prompt, f"Done ({len(prompt)} chars)"
+            log = "Done — but model returned empty text."
+            if saved_custom:
+                log += " · Saved Custom instruction."
+            return "", log
+        log = f"Done ({len(prompt)} chars)"
+        if saved_custom:
+            log += " · Saved Custom instruction."
+        return prompt, log
     except Exception as e:
         traceback.print_exc()
         return "", f"Generate failed: {type(e).__name__}: {e}"
@@ -522,11 +540,16 @@ def _generate_vlm(
     extra: str,
     preset: str,
     instruction: str,
+    lang: str,
     temperature: float,
     top_p: float,
     num_predict: int,
 ):
     try:
+        saved_custom = False
+        if preset == "Custom":
+            saved_custom = save_custom_instruction("vlm", instruction, lang)
+
         if image is None:
             raise ValueError("Image is required for VLM generate.")
         if not (model_name or "").strip():
@@ -550,8 +573,14 @@ def _generate_vlm(
             timeout=600.0,
         )
         if not (prompt or "").strip():
-            return "", "VLM done — but model returned empty text."
-        return prompt, f"VLM done ({len(prompt)} chars)"
+            log = "VLM done — but model returned empty text."
+            if saved_custom:
+                log += " · Saved Custom instruction."
+            return "", log
+        log = f"VLM done ({len(prompt)} chars)"
+        if saved_custom:
+            log += " · Saved Custom instruction."
+        return prompt, log
     except Exception as e:
         traceback.print_exc()
         return "", f"VLM generate failed: {type(e).__name__}: {e}"
@@ -892,12 +921,12 @@ def on_ui_tabs():
             )
 
         idea_preset.change(
-            fn=_on_preset_change,
+            fn=lambda p, l, c: _on_preset_change(p, l, c, "idea"),
             inputs=[idea_preset, idea_lang, idea_instruction],
             outputs=[idea_instruction],
         )
         idea_lang.change(
-            fn=_on_lang_change,
+            fn=lambda l, p, c: _on_lang_change(l, p, c, "idea"),
             inputs=[idea_lang, idea_preset, idea_instruction],
             outputs=[idea_instruction],
         )
@@ -907,12 +936,12 @@ def on_ui_tabs():
             outputs=[idea_lang, idea_preset, idea_instruction],
         )
         vlm_preset.change(
-            fn=_on_preset_change,
+            fn=lambda p, l, c: _on_preset_change(p, l, c, "vlm"),
             inputs=[vlm_preset, vlm_lang, vlm_instruction],
             outputs=[vlm_instruction],
         )
         vlm_lang.change(
-            fn=_on_lang_change,
+            fn=lambda l, p, c: _on_lang_change(l, p, c, "vlm"),
             inputs=[vlm_lang, vlm_preset, vlm_instruction],
             outputs=[vlm_instruction],
         )
@@ -995,6 +1024,7 @@ def on_ui_tabs():
                 idea,
                 idea_preset,
                 idea_instruction,
+                idea_lang,
                 idea_temperature,
                 idea_top_p,
                 idea_num_predict,
@@ -1011,6 +1041,7 @@ def on_ui_tabs():
                 vlm_extra,
                 vlm_preset,
                 vlm_instruction,
+                vlm_lang,
                 vlm_temperature,
                 vlm_top_p,
                 vlm_num_predict,
