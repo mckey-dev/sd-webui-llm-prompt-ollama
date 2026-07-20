@@ -3,6 +3,8 @@
 # ================================================================================
 from __future__ import annotations
 
+import base64
+import io
 import traceback
 
 import gradio as gr
@@ -17,6 +19,7 @@ from llm_prompt_ollama.download import (
     download_gguf,
     get_models_dir,
     gguf_path_for,
+    mmproj_path_for,
 )
 from llm_prompt_ollama.model_setup import (
     DEFAULT_GGUF_FILENAME,
@@ -26,6 +29,7 @@ from llm_prompt_ollama.model_setup import (
     SETTING_DEFAULT_GGUF,
     SETTING_DEFAULT_MODEL,
     SETTING_OLLAMA_BIN,
+    SETTING_SHOW_UNCENSORED_PRESETS,
     connection_help,
     create_model,
     get_setting,
@@ -42,12 +46,19 @@ from llm_prompt_ollama.models_catalog import (
 from llm_prompt_ollama.ollama_client import OllamaClient, OllamaError
 from llm_prompt_ollama.presets import (
     DEFAULT_LANG,
-    DEFAULT_PRESET,
     LANG_CHOICES,
-    PRESET_CHOICES,
+    default_preset_for,
     instruction_for_preset,
+    preset_choices_for,
     reload_presets_catalog,
 )
+from llm_prompt_ollama.wd_tagger import (
+    DEFAULT_WD_REPO,
+    tag_image,
+    wd_model_choices,
+)
+
+_WD_CHOICES = wd_model_choices()
 
 
 # ================================================================================
@@ -79,10 +90,20 @@ def _gguf_for_catalog(model_id: str | None) -> str:
     if not entry:
         return ""
     custom = get_setting(SETTING_DEFAULT_GGUF, "")
-    # Settings override applies only when viewing the catalog default entry.
     if custom and entry["id"] == default_model_id():
         return custom
     return str(gguf_path_for(entry["id"]))
+
+
+# ================================================================================
+# カタログモデルに対応する mmproj パス文字列を返す
+# ================================================================================
+def _mmproj_for_catalog(model_id: str | None) -> str:
+    entry = get_model(model_id) if model_id else None
+    if not entry:
+        return ""
+    path = mmproj_path_for(entry["id"])
+    return str(path) if path else ""
 
 
 # ================================================================================
@@ -100,15 +121,33 @@ def _catalog_button_updates(enabled: bool):
 
 
 # ================================================================================
+# PIL / numpy 画像を base64 文字列へ変換する
+# ================================================================================
+def _image_to_b64(image) -> str:
+    from PIL import Image
+    import numpy as np
+
+    if image is None:
+        raise ValueError("No image provided.")
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(image)
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA")
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+# ================================================================================
 # カタログ選択変更時に GGUF パス・状態・モデル名を更新する
 # ================================================================================
 def _on_catalog_change(catalog_id: str):
     entry = get_model(catalog_id)
     if not entry:
-        return "", "", gr.update(), *_catalog_button_updates(False)
-    # Changing catalog always replaces path/status with the entry's expected values.
+        return "", "", "", gr.update(), *_catalog_button_updates(False)
     return (
         _gguf_for_catalog(entry["id"]),
+        _mmproj_for_catalog(entry["id"]),
         describe_gguf_status(entry["id"]),
         gr.update(value=entry["ollama_name"]),
         *_catalog_button_updates(True),
@@ -120,19 +159,26 @@ def _on_catalog_change(catalog_id: str):
 # ================================================================================
 def _download_gguf(catalog_id: str, force: bool):
     if not has_catalog_models():
-        return "", "", "No models in models.json.", gr.update()
+        return "", "", "", "No models in models.json.", gr.update()
     try:
         path, msg = download_gguf(catalog_id, force=bool(force))
         entry = require_model(catalog_id)
         status = describe_gguf_status(entry["id"])
-        return str(path), status, msg, gr.update(value=entry["ollama_name"])
+        return (
+            str(path),
+            _mmproj_for_catalog(entry["id"]),
+            status,
+            msg,
+            gr.update(value=entry["ollama_name"]),
+        )
     except Exception as e:
         traceback.print_exc()
         entry = get_model(catalog_id)
         if not entry:
-            return "", "", f"Download failed: {type(e).__name__}: {e}", gr.update()
+            return "", "", "", f"Download failed: {type(e).__name__}: {e}", gr.update()
         return (
             _gguf_for_catalog(entry["id"]),
+            _mmproj_for_catalog(entry["id"]),
             describe_gguf_status(entry["id"]),
             f"Download failed: {type(e).__name__}: {e}",
             gr.update(),
@@ -145,11 +191,10 @@ def _download_gguf(catalog_id: str, force: bool):
 def _refresh_gguf_status(catalog_id: str, current_path: str):
     entry = get_model(catalog_id)
     if not entry:
-        return "", str(get_models_dir()), ""
+        return "", str(get_models_dir()), "", ""
     status = describe_gguf_status(entry["id"])
-    # Keep a user-edited path; fill only when still blank.
     path = (current_path or "").strip() or _gguf_for_catalog(entry["id"])
-    return status, str(get_models_dir()), path
+    return status, str(get_models_dir()), path, _mmproj_for_catalog(entry["id"])
 
 
 # ================================================================================
@@ -161,6 +206,7 @@ def _refresh_catalog(current_id: str):
     if not choices:
         return (
             gr.update(choices=[], value=None),
+            "",
             "",
             "",
             gr.update(),
@@ -176,10 +222,10 @@ def _refresh_catalog(current_id: str):
     else:
         value = ids[0]
     entry = require_model(value)
-    # Catalog reload always syncs path/status to the selected entry.
     return (
         gr.update(choices=choices, value=value),
         _gguf_for_catalog(entry["id"]),
+        _mmproj_for_catalog(entry["id"]),
         describe_gguf_status(entry["id"]),
         gr.update(value=entry["ollama_name"]),
         str(get_models_dir()),
@@ -206,17 +252,21 @@ def _on_lang_change(lang: str, preset: str, _current: str):
 
 
 # ================================================================================
-# presets.json を再読み込みし言語・プリセット・Instruction を更新する
+# presets.json を再読み込みし用途向け Dropdown を更新する
 # ================================================================================
-def _refresh_presets(current_preset: str, current_lang: str):
-    catalog = reload_presets_catalog()
-    choices = [p["id"] for p in catalog["presets"]]
-    langs = list(catalog["languages"])
-    default_preset = str(catalog["default_preset"])
-    default_lang = str(catalog["default_lang"])
-    preset = current_preset if current_preset in choices else default_preset
-    lang = current_lang if current_lang in langs else default_lang
-    # Custom keeps the edited instruction text; others sync from presets.json.
+def _refresh_presets_for(target: str, current_preset: str, current_lang: str):
+    reload_presets_catalog()
+    choices = preset_choices_for(target)
+    langs = list(LANG_CHOICES)
+    try:
+        from llm_prompt_ollama.presets import load_presets_catalog
+
+        langs = list(load_presets_catalog()["languages"])
+    except Exception:
+        pass
+    default_p = default_preset_for(target)
+    preset = current_preset if current_preset in choices else default_p
+    lang = current_lang if current_lang in langs else (langs[0] if langs else DEFAULT_LANG)
     if preset == "Custom":
         instruction = gr.update()
     else:
@@ -290,11 +340,12 @@ def _refresh_models(api_url: str, current: str):
 # ================================================================================
 # ローカル GGUF から Ollama モデルを作成／更新する
 # ================================================================================
-def _create_model(api_url: str, model_name: str, gguf_path: str):
+def _create_model(api_url: str, model_name: str, gguf_path: str, mmproj_path: str):
     try:
         msg = create_model(
             model_name=model_name,
             gguf_path=gguf_path,
+            mmproj_path=(mmproj_path or "").strip() or None,
             api_url=api_url or _api_url(),
             ollama_bin=get_setting(SETTING_OLLAMA_BIN, "") or None,
             prefer_api=True,
@@ -313,9 +364,9 @@ def _create_model(api_url: str, model_name: str, gguf_path: str):
 
 
 # ================================================================================
-# アイデアから SD 用プロンプトを生成する
+# アイデアから SD 用プロンプトを生成する（Idea タブ）
 # ================================================================================
-def _generate(
+def _generate_idea(
     api_url: str,
     model_name: str,
     idea: str,
@@ -332,12 +383,10 @@ def _generate(
             raise ValueError("Model name is empty. Check connection or create the model first.")
 
         system = instruction if preset == "Custom" else (instruction or instruction_for_preset(preset))
-        user_content = (idea or "").strip()
-
         client = _client(api_url)
         prompt = client.chat(
             model=model_name.strip(),
-            user_content=user_content,
+            user_content=(idea or "").strip(),
             system=system,
             temperature=float(temperature),
             top_p=float(top_p),
@@ -345,11 +394,86 @@ def _generate(
             think=False,
         )
         if not (prompt or "").strip():
-            return "", "Done — but model returned empty text. Try another idea or recreate the model."
+            return "", "Done — but model returned empty text."
         return prompt, f"Done ({len(prompt)} chars)"
     except Exception as e:
         traceback.print_exc()
         return "", f"Generate failed: {type(e).__name__}: {e}"
+
+
+# ================================================================================
+# 画像を VLM で解析し SD 用プロンプトを生成する
+# ================================================================================
+def _generate_vlm(
+    api_url: str,
+    model_name: str,
+    image,
+    extra: str,
+    preset: str,
+    instruction: str,
+    temperature: float,
+    top_p: float,
+    num_predict: int,
+):
+    try:
+        if image is None:
+            raise ValueError("Image is required for VLM generate.")
+        if not (model_name or "").strip():
+            raise ValueError("Model name is empty. Create / select a vision model first.")
+
+        system = instruction if preset == "Custom" else (instruction or instruction_for_preset(preset))
+        user_content = (extra or "").strip() or (
+            "Analyze this image and write one natural-language image-generation prompt."
+        )
+        b64 = _image_to_b64(image)
+        client = _client(api_url)
+        prompt = client.chat(
+            model=model_name.strip(),
+            user_content=user_content,
+            system=system,
+            images=[b64],
+            temperature=float(temperature),
+            top_p=float(top_p),
+            num_predict=int(num_predict),
+            think=False,
+            timeout=600.0,
+        )
+        if not (prompt or "").strip():
+            return "", "VLM done — but model returned empty text."
+        return prompt, f"VLM done ({len(prompt)} chars)"
+    except Exception as e:
+        traceback.print_exc()
+        return "", f"VLM generate failed: {type(e).__name__}: {e}"
+
+
+# ================================================================================
+# WD Tagger でタグ形式プロンプトを生成する
+# ================================================================================
+def _generate_wd(
+    image,
+    repo_id: str,
+    general_thresh: float,
+    character_thresh: float,
+    underscore_to_space: bool,
+    escape_parentheses: bool,
+):
+    try:
+        if image is None:
+            raise ValueError("Image is required for WD Tagger.")
+        tags = tag_image(
+            image,
+            repo_id=repo_id or DEFAULT_WD_REPO,
+            general_thresh=float(general_thresh),
+            character_thresh=float(character_thresh),
+            underscore_to_space=bool(underscore_to_space),
+            escape_parentheses=bool(escape_parentheses),
+        )
+        if not tags.strip():
+            return "", "WD Tagger done — no tags above threshold."
+        return tags, f"WD Tagger done ({len(tags.split(','))} tags)"
+    except Exception as e:
+        traceback.print_exc()
+        return "", f"WD Tagger failed: {type(e).__name__}: {e}"
 
 
 # ================================================================================
@@ -405,6 +529,16 @@ def on_ui_settings():
             component_args=shared.hide_dirs,
         ).info("Used when /api/create fails and CLI fallback is needed. Leave empty to use PATH."),
     )
+    shared.opts.add_option(
+        SETTING_SHOW_UNCENSORED_PRESETS,
+        shared.OptionInfo(
+            False,
+            "Show uncensored instruction presets",
+            section=section,
+        ).info(
+            "When enabled, presets with uncensored: true in presets.json appear in Idea/VLM dropdowns."
+        ),
+    )
 
 
 # ================================================================================
@@ -424,18 +558,22 @@ def on_ui_tabs():
         initial_id = None
         initial_ollama = ""
 
+    idea_preset_choices = preset_choices_for("idea")
+    idea_default_preset = default_preset_for("idea")
+    vlm_preset_choices = preset_choices_for("vlm")
+    vlm_default_preset = default_preset_for("vlm")
+
     with gr.Blocks(analytics_enabled=False) as demo:
         gr.Markdown(
             "### LLM Prompt (Ollama)\n"
-            "テキストのアイデアから Stable Diffusion 用プロンプトを生成します。  \n"
-            "利用可能な GGUF は拡張直下の **`models.json`** で管理します。  \n"
-            "1. Ollama を起動（**Start Ollama**）→ **Check connection**  \n"
-            "2. **Catalog model** を選び **Download GGUF**（初回）→ **Create / Update model**  \n"
-            "3. アイデアを入力 → **Generate prompt** → Send to txt2img / img2img"
+            "1. **モデルロード** — Ollama 接続・GGUF Download / Create（vision は mmproj 対応）  \n"
+            "2. **Idea** — テキストから SD プロンプト  \n"
+            "3. **VLM** — 画像解析から SD プロンプト（おまけ: WD Tagger）"
         )
 
-        with gr.Row():
-            with gr.Column(scale=1):
+        with gr.Tabs():
+            # ----- モデルロード -----
+            with gr.Tab("モデルロード"):
                 with gr.Accordion("Ollama connection", open=True):
                     api_url = gr.Textbox(
                         label="Ollama API URL",
@@ -446,7 +584,7 @@ def on_ui_tabs():
                         check_btn = gr.Button("Check connection", variant="primary")
                         start_btn = gr.Button("Start Ollama")
                         refresh_btn = gr.Button("Refresh models")
-                    conn_status = gr.Textbox(label="Connection status", lines=8, interactive=False)
+                    conn_status = gr.Textbox(label="Connection status", lines=6, interactive=False)
 
                 with gr.Accordion("Model from local GGUF", open=True):
                     with gr.Row():
@@ -468,9 +606,8 @@ def on_ui_tabs():
                         label="GGUF status",
                         value="",
                         interactive=False,
-                        lines=2,
+                        lines=3,
                     )
-                    # Must stay blank on startup; do not restore from ui-config.json.
                     gguf_status.do_not_save_to_config = True
                     force_redownload = gr.Checkbox(label="Force re-download", value=False)
                     with gr.Row():
@@ -492,8 +629,15 @@ def on_ui_tabs():
                         lines=1,
                         placeholder="Catalog 選択・更新・Download で自動入力（手動編集可）",
                     )
-                    # Must stay blank on startup; do not restore from ui-config.json.
                     gguf_path.do_not_save_to_config = True
+                    mmproj_path = gr.Textbox(
+                        label="Local mmproj path (auto)",
+                        value="",
+                        lines=1,
+                        interactive=False,
+                        placeholder="hf_mmproj があるカタログのみ表示",
+                    )
+                    mmproj_path.do_not_save_to_config = True
                     create_btn = gr.Button(
                         "Create / Update model",
                         variant="primary",
@@ -501,59 +645,148 @@ def on_ui_tabs():
                     )
                     create_log = gr.Textbox(label="Create / Download log", lines=8, interactive=False)
 
-                with gr.Accordion("Generation", open=True):
-                    idea = gr.Textbox(
-                        label="Idea / description (Japanese OK)",
-                        lines=8,
-                        placeholder="例: 雨の夜のネオン街を歩く銀髪の少女、サイバーパンク、映画的な照明",
-                    )
-                    lang = gr.Radio(
-                        choices=LANG_CHOICES,
-                        value=DEFAULT_LANG,
-                        label="Instruction language",
-                    )
-                    with gr.Row():
-                        preset = gr.Dropdown(
-                            label="Instruction preset",
-                            choices=PRESET_CHOICES,
-                            value=DEFAULT_PRESET,
-                            allow_custom_value=False,
-                            scale=4,
-                        )
-                        refresh_presets_btn = gr.Button("更新", scale=1)
-                    instruction = gr.Textbox(
-                        label="Instruction (editable — use Custom to keep edits)",
-                        lines=8,
-                        value=instruction_for_preset(DEFAULT_PRESET, DEFAULT_LANG),
-                    )
-                    temperature = gr.Slider(0.0, 1.5, value=0.7, step=0.05, label="Temperature")
-                    top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top-p")
-                    num_predict = gr.Slider(
-                        64, 2048, value=512, step=32, label="Max tokens (num_predict)"
-                    )
-                    generate_btn = gr.Button("Generate prompt", variant="primary")
-
-            with gr.Column(scale=1):
-                prompt = gr.Textbox(
-                    label="Generated prompt",
-                    lines=18,
-                    elem_id="llm_prompt_ollama_generated_prompt",
-                )
+            # ----- Idea -----
+            with gr.Tab("Idea"):
                 with gr.Row():
-                    copy_btn = gr.Button(
-                        "Copy prompt",
-                        elem_id="llm_prompt_ollama_copy_prompt_btn",
-                        scale=1,
-                    )
-                    buttons = parameters_copypaste.create_buttons(["txt2img", "img2img"])
-                log = gr.Textbox(label="Log", lines=6, interactive=False)
+                    with gr.Column(scale=1):
+                        idea = gr.Textbox(
+                            label="Idea / description (Japanese OK)",
+                            lines=8,
+                            placeholder="例: 雨の夜のネオン街を歩く銀髪の少女、サイバーパンク、映画的な照明",
+                        )
+                        idea_lang = gr.Radio(
+                            choices=LANG_CHOICES,
+                            value=DEFAULT_LANG,
+                            label="Instruction language",
+                        )
+                        with gr.Row():
+                            idea_preset = gr.Dropdown(
+                                label="Instruction preset",
+                                choices=idea_preset_choices,
+                                value=idea_default_preset,
+                                allow_custom_value=False,
+                                scale=4,
+                            )
+                            refresh_idea_presets_btn = gr.Button("更新", scale=1)
+                        idea_instruction = gr.Textbox(
+                            label="Instruction (editable — use Custom to keep edits)",
+                            lines=8,
+                            value=instruction_for_preset(idea_default_preset, DEFAULT_LANG),
+                        )
+                        idea_generate_btn = gr.Button("Generate prompt", variant="primary")
+                        with gr.Accordion("詳細設定", open=False):
+                            idea_temperature = gr.Slider(0.0, 1.5, value=0.7, step=0.05, label="Temperature")
+                            idea_top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top-p")
+                            idea_num_predict = gr.Slider(
+                                64, 2048, value=512, step=32, label="Max tokens (num_predict)"
+                            )
+                    with gr.Column(scale=1):
+                        idea_prompt = gr.Textbox(
+                            label="Generated prompt",
+                            lines=18,
+                            show_copy_button=True,
+                            elem_id="llm_prompt_ollama_idea_generated_prompt",
+                        )
+                        with gr.Row(elem_id="llm_prompt_ollama_idea_prompt_actions"):
+                            idea_copy_btn = gr.Button(
+                                "Copy prompt",
+                                elem_id="llm_prompt_ollama_idea_copy_prompt_btn",
+                                scale=1,
+                                visible=True,
+                            )
+                            idea_copy_btn.do_not_save_to_config = True
+                            idea_send_txt = gr.Button("Send to txt2img")
+                            idea_send_img = gr.Button("Send to img2img")
+                        idea_log = gr.Textbox(label="Log", lines=6, interactive=False)
 
-        for tabname, button in buttons.items():
+            # ----- VLM -----
+            with gr.Tab("VLM"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        vlm_image = gr.Image(
+                            label="Input image",
+                            type="pil",
+                            image_mode="RGBA",
+                        )
+                        vlm_extra = gr.Textbox(
+                            label="Additional instruction (optional)",
+                            lines=3,
+                            placeholder="例: 構図と照明を強調して",
+                        )
+                        vlm_generate_btn = gr.Button("Generate with VLM", variant="primary")
+                        with gr.Accordion("VLM オプション", open=False):
+                            vlm_lang = gr.Radio(
+                                choices=LANG_CHOICES,
+                                value=DEFAULT_LANG,
+                                label="Instruction language",
+                            )
+                            with gr.Row():
+                                vlm_preset = gr.Dropdown(
+                                    label="Instruction preset",
+                                    choices=vlm_preset_choices,
+                                    value=vlm_default_preset,
+                                    allow_custom_value=False,
+                                    scale=4,
+                                )
+                                refresh_vlm_presets_btn = gr.Button("更新", scale=1)
+                            vlm_instruction = gr.Textbox(
+                                label="Instruction (editable — use Custom to keep edits)",
+                                lines=6,
+                                value=instruction_for_preset(vlm_default_preset, DEFAULT_LANG),
+                            )
+                            vlm_temperature = gr.Slider(0.0, 1.5, value=0.7, step=0.05, label="Temperature")
+                            vlm_top_p = gr.Slider(0.1, 1.0, value=0.9, step=0.05, label="Top-p")
+                            vlm_num_predict = gr.Slider(
+                                64, 2048, value=512, step=32, label="Max tokens (num_predict)"
+                            )
+                        with gr.Accordion("WD Tagger", open=False):
+                            wd_repo = gr.Dropdown(
+                                label="WD Tagger model (V3 only)",
+                                choices=_WD_CHOICES,
+                                value=DEFAULT_WD_REPO,
+                                allow_custom_value=False,
+                            )
+                            wd_general = gr.Slider(0.0, 1.0, value=0.35, step=0.05, label="General threshold")
+                            wd_character = gr.Slider(0.0, 1.0, value=0.85, step=0.05, label="Character threshold")
+                            wd_underscore_to_space = gr.Checkbox(
+                                label="アンダースコアをスペースに置換する",
+                                value=True,
+                            )
+                            wd_escape_parens = gr.Checkbox(
+                                label="括弧にエスケープ処理をする",
+                                value=True,
+                            )
+                            wd_btn = gr.Button("Tag with WD Tagger")
+                    with gr.Column(scale=1):
+                        vlm_prompt = gr.Textbox(
+                            label="Generated prompt",
+                            lines=18,
+                            show_copy_button=True,
+                            elem_id="llm_prompt_ollama_vlm_generated_prompt",
+                        )
+                        with gr.Row(elem_id="llm_prompt_ollama_vlm_prompt_actions"):
+                            vlm_copy_btn = gr.Button(
+                                "Copy prompt",
+                                elem_id="llm_prompt_ollama_vlm_copy_prompt_btn",
+                                scale=1,
+                                visible=True,
+                            )
+                            vlm_copy_btn.do_not_save_to_config = True
+                            vlm_send_txt = gr.Button("Send to txt2img")
+                            vlm_send_img = gr.Button("Send to img2img")
+                        vlm_log = gr.Textbox(label="Log", lines=6, interactive=False)
+
+        for tabname, button, source in (
+            ("txt2img", idea_send_txt, idea_prompt),
+            ("img2img", idea_send_img, idea_prompt),
+            ("txt2img", vlm_send_txt, vlm_prompt),
+            ("img2img", vlm_send_img, vlm_prompt),
+        ):
             parameters_copypaste.register_paste_params_button(
                 parameters_copypaste.ParamBinding(
                     paste_button=button,
                     tabname=tabname,
-                    source_text_component=prompt,
+                    source_text_component=source,
                 )
             )
 
@@ -565,27 +798,44 @@ def on_ui_tabs():
                 return "Copied to clipboard."
             return "Nothing to copy."
 
-        copy_btn.click(fn=_copy_feedback, inputs=[prompt], outputs=[log])
+        idea_copy_btn.click(fn=_copy_feedback, inputs=[idea_prompt], outputs=[idea_log])
+        vlm_copy_btn.click(fn=_copy_feedback, inputs=[vlm_prompt], outputs=[vlm_log])
 
-        preset.change(
+        idea_preset.change(
             fn=_on_preset_change,
-            inputs=[preset, lang, instruction],
-            outputs=[instruction],
+            inputs=[idea_preset, idea_lang, idea_instruction],
+            outputs=[idea_instruction],
         )
-        lang.change(
+        idea_lang.change(
             fn=_on_lang_change,
-            inputs=[lang, preset, instruction],
-            outputs=[instruction],
+            inputs=[idea_lang, idea_preset, idea_instruction],
+            outputs=[idea_instruction],
         )
-        refresh_presets_btn.click(
-            fn=_refresh_presets,
-            inputs=[preset, lang],
-            outputs=[lang, preset, instruction],
+        refresh_idea_presets_btn.click(
+            fn=lambda p, l: _refresh_presets_for("idea", p, l),
+            inputs=[idea_preset, idea_lang],
+            outputs=[idea_lang, idea_preset, idea_instruction],
         )
+        vlm_preset.change(
+            fn=_on_preset_change,
+            inputs=[vlm_preset, vlm_lang, vlm_instruction],
+            outputs=[vlm_instruction],
+        )
+        vlm_lang.change(
+            fn=_on_lang_change,
+            inputs=[vlm_lang, vlm_preset, vlm_instruction],
+            outputs=[vlm_instruction],
+        )
+        refresh_vlm_presets_btn.click(
+            fn=lambda p, l: _refresh_presets_for("vlm", p, l),
+            inputs=[vlm_preset, vlm_lang],
+            outputs=[vlm_lang, vlm_preset, vlm_instruction],
+        )
+
         catalog_dd.change(
             fn=_on_catalog_change,
             inputs=[catalog_dd],
-            outputs=[gguf_path, gguf_status, model_name, download_btn, create_btn],
+            outputs=[gguf_path, mmproj_path, gguf_status, model_name, download_btn, create_btn],
         )
         refresh_catalog_btn.click(
             fn=_refresh_catalog,
@@ -593,6 +843,7 @@ def on_ui_tabs():
             outputs=[
                 catalog_dd,
                 gguf_path,
+                mmproj_path,
                 gguf_status,
                 model_name,
                 models_dir_box,
@@ -614,38 +865,67 @@ def on_ui_tabs():
         refresh_btn.click(
             fn=_refresh_models,
             inputs=[api_url, model_name],
-            outputs=[model_name, log],
+            outputs=[model_name, create_log],
         )
         download_btn.click(
             fn=_download_gguf,
             inputs=[catalog_dd, force_redownload],
-            outputs=[gguf_path, gguf_status, create_log, model_name],
+            outputs=[gguf_path, mmproj_path, gguf_status, create_log, model_name],
             show_progress=True,
         )
         refresh_gguf_btn.click(
             fn=_refresh_gguf_status,
             inputs=[catalog_dd, gguf_path],
-            outputs=[gguf_status, models_dir_box, gguf_path],
+            outputs=[gguf_status, models_dir_box, gguf_path, mmproj_path],
         )
         create_btn.click(
             fn=_create_model,
-            inputs=[api_url, model_name, gguf_path],
+            inputs=[api_url, model_name, gguf_path, mmproj_path],
             outputs=[create_log, model_name],
             show_progress=True,
         )
-        generate_btn.click(
-            fn=_generate,
+        idea_generate_btn.click(
+            fn=_generate_idea,
             inputs=[
                 api_url,
                 model_name,
                 idea,
-                preset,
-                instruction,
-                temperature,
-                top_p,
-                num_predict,
+                idea_preset,
+                idea_instruction,
+                idea_temperature,
+                idea_top_p,
+                idea_num_predict,
             ],
-            outputs=[prompt, log],
+            outputs=[idea_prompt, idea_log],
+            show_progress=True,
+        )
+        vlm_generate_btn.click(
+            fn=_generate_vlm,
+            inputs=[
+                api_url,
+                model_name,
+                vlm_image,
+                vlm_extra,
+                vlm_preset,
+                vlm_instruction,
+                vlm_temperature,
+                vlm_top_p,
+                vlm_num_predict,
+            ],
+            outputs=[vlm_prompt, vlm_log],
+            show_progress=True,
+        )
+        wd_btn.click(
+            fn=_generate_wd,
+            inputs=[
+                vlm_image,
+                wd_repo,
+                wd_general,
+                wd_character,
+                wd_underscore_to_space,
+                wd_escape_parens,
+            ],
+            outputs=[vlm_prompt, vlm_log],
             show_progress=True,
         )
 

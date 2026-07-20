@@ -8,12 +8,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-# Minimal safe fallback when presets.json is missing or invalid (no NSFW).
+# Minimal safe fallback when presets.json is missing or invalid (no uncensored presets).
 _FALLBACK_PRESET_ID = "Idea → SD prompt"
 _FALLBACK_CUSTOM_ID = "Custom"
 _FALLBACK_LANGS = ["English", "日本語"]
 _FALLBACK_EN = (
-    "You are writing ONE natural-language prompt for a Stable Diffusion / anime image model.\n"
+    "You are writing ONE natural-language image-generation prompt for a Stable Diffusion / anime image model.\n"
     "The user provides an idea (possibly in Japanese or mixed language).\n"
     "Expand it into fluent English prose covering subject, appearance, clothing, pose, "
     "expression, setting, lighting, camera, and art style when relevant.\n"
@@ -21,7 +21,7 @@ _FALLBACK_EN = (
     "Do not add explanations. Output only the prompt."
 )
 _FALLBACK_JA = (
-    "あなたは Stable Diffusion／アニメ向け画像生成用の自然言語プロンプトを1つ作成します。\n"
+    "あなたは Stable Diffusion／アニメ向けの画像生成用の自然言語プロンプトを1つ作成します。\n"
     "ユーザーはアイデア（日本語や混在文でも可）を与えます。\n"
     "被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を、必要に応じて含む"
     "流暢な英語の文章に展開してください。\n"
@@ -45,7 +45,7 @@ def presets_json_path() -> Path:
 
 
 # ================================================================================
-# presets.json 欠落・不正時の最小カタログを返す（NSFW なし）
+# presets.json 欠落・不正時の最小カタログを返す（uncensored プリセットなし）
 # ================================================================================
 def _fallback_catalog() -> dict[str, Any]:
     return {
@@ -55,7 +55,8 @@ def _fallback_catalog() -> dict[str, Any]:
         "presets": [
             {
                 "id": _FALLBACK_PRESET_ID,
-                "nsfw": False,
+                "uncensored": False,
+                "for": ["idea"],
                 "instructions": {
                     "English": _FALLBACK_EN,
                     "日本語": _FALLBACK_JA,
@@ -63,8 +64,29 @@ def _fallback_catalog() -> dict[str, Any]:
             },
             {
                 "id": _FALLBACK_CUSTOM_ID,
-                "nsfw": False,
+                "uncensored": False,
+                "for": ["idea", "vlm"],
                 "instructions": {"English": "", "日本語": ""},
+            },
+            {
+                "id": "Image → SD prompt",
+                "uncensored": False,
+                "for": ["vlm"],
+                "instructions": {
+                    "English": (
+                        "Analyze the attached image and write ONE fluent "
+                        "natural-language image-generation prompt for Stable Diffusion / anime models.\n"
+                        "Cover subject, appearance, clothing, pose, expression, setting, "
+                        "lighting, camera, and art style when visible.\n"
+                        "Do not add explanations. Output only the prompt."
+                    ),
+                    "日本語": (
+                        "添付画像を解析し、Stable Diffusion／アニメ向けの画像生成用の自然言語プロンプトを"
+                        "1つ作成してください。\n"
+                        "見える範囲で被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を含めてください。\n"
+                        "説明は不要です。プロンプト本文のみを出力してください（英語）。"
+                    ),
+                },
             },
         ],
     }
@@ -90,9 +112,27 @@ def _normalize_preset(raw: dict[str, Any]) -> dict[str, Any] | None:
         instructions[key] = "" if text is None else str(text)
     if not instructions:
         return None
+    for_raw = raw.get("for")
+    targets: list[str] = []
+    if isinstance(for_raw, list):
+        for item in for_raw:
+            t = str(item or "").strip().lower()
+            if t in ("idea", "vlm") and t not in targets:
+                targets.append(t)
+    elif isinstance(for_raw, str) and for_raw.strip():
+        t = for_raw.strip().lower()
+        if t in ("idea", "vlm"):
+            targets.append(t)
+    if not targets:
+        targets = ["idea"]
+    if "uncensored" in raw:
+        uncensored = bool(raw.get("uncensored"))
+    else:
+        uncensored = bool(raw.get("nsfw", False))
     return {
         "id": pid,
-        "nsfw": bool(raw.get("nsfw", False)),
+        "uncensored": uncensored,
+        "for": targets,
         "instructions": instructions,
     }
 
@@ -197,11 +237,45 @@ PRESET_CHOICES = [p["id"] for p in list_presets()]
 
 
 # ================================================================================
-# NSFW 向けプリセットかどうかを判定する
+# 用途（idea / vlm）向けプリセット ID 一覧を返す
 # ================================================================================
-def is_nsfw_preset(preset: str) -> bool:
+def preset_choices_for(target: str) -> list[str]:
+    from .model_setup import uncensored_presets_visible
+
+    t = (target or "idea").strip().lower()
+    show_uncensored = uncensored_presets_visible()
+    out: list[str] = []
+    for p in list_presets():
+        if not show_uncensored and p.get("uncensored"):
+            continue
+        targets = p.get("for") or ["idea"]
+        if t in targets:
+            out.append(p["id"])
+    return out
+
+
+# ================================================================================
+# 用途向けの既定プリセット ID を返す
+# ================================================================================
+def default_preset_for(target: str) -> str:
+    choices = preset_choices_for(target)
+    if not choices:
+        return DEFAULT_PRESET
+    if target == "idea" and DEFAULT_PRESET in choices:
+        return DEFAULT_PRESET
+    return choices[0]
+
+
+# ================================================================================
+# Uncensored 向けプリセットかどうかを判定する
+# ================================================================================
+def is_uncensored_preset(preset: str) -> bool:
     entry = get_preset(preset)
-    return bool(entry and entry.get("nsfw"))
+    return bool(entry and entry.get("uncensored"))
+
+
+def is_nsfw_preset(preset: str) -> bool:
+    return is_uncensored_preset(preset)
 
 
 # ================================================================================

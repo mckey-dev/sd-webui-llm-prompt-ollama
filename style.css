@@ -1,18 +1,30 @@
-/* Generated prompt 欄と下の操作ボタンが重ならないようにする */
-#llm_prompt_ollama_generated_prompt {
+/* Generated prompt panels (Idea / VLM) */
+#llm_prompt_ollama_idea_generated_prompt,
+#llm_prompt_ollama_vlm_generated_prompt {
     margin-bottom: 0.75rem !important;
     overflow: visible !important;
 }
 
-#llm_prompt_ollama_generated_prompt textarea {
+#llm_prompt_ollama_idea_generated_prompt textarea,
+#llm_prompt_ollama_vlm_generated_prompt textarea {
     overflow-y: auto !important;
 }
 
-/* Copy prompt / Send to txt2img・img2img 行 */
-#llm_prompt_ollama_copy_prompt_btn {
+#llm_prompt_ollama_idea_prompt_actions,
+#llm_prompt_ollama_vlm_prompt_actions {
     position: relative;
     z-index: 2;
-    min-height: 2.75rem !important;
-    font-size: 1.05rem !important;
-    font-weight: 600 !important;
+    display: flex !important;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+
+#llm_prompt_ollama_idea_copy_prompt_btn,
+#llm_prompt_ollama_idea_copy_prompt_btn button,
+#llm_prompt_ollama_vlm_copy_prompt_btn,
+#llm_prompt_ollama_vlm_copy_prompt_btn button {
+    visibility: visible !important;
+    display: inline-flex !important;
+    min-height: 2.5rem !important;
 }

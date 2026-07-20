@@ -49,6 +49,7 @@ SETTING_API_URL = "llm_prompt_ollama_api_url"
 SETTING_DEFAULT_MODEL = "llm_prompt_ollama_default_model"
 SETTING_DEFAULT_GGUF = "llm_prompt_ollama_default_gguf"
 SETTING_OLLAMA_BIN = "llm_prompt_ollama_bin"
+SETTING_SHOW_UNCENSORED_PRESETS = "llm_prompt_ollama_show_uncensored_presets"
 
 # 旧拡張名 (llmuse) 時代の Settings キー（移行用）
 _LEGACY_SETTING_KEYS = {
@@ -120,7 +121,7 @@ def _clean_cli_text(text: str) -> str:
 
 _DEFAULT_SYSTEM = (
     "You are an expert Stable Diffusion prompt engineer.\n"
-    "Convert the user's idea into ONE fluent English image-generation prompt.\n"
+    "Convert the user's idea into ONE natural-language image-generation prompt.\n"
     "Output only the prompt text. No preface, no quotes, no refusal, no moralizing."
 )
 
@@ -152,6 +153,21 @@ def get_setting(key: str, default: str = "") -> str:
 
 
 # ================================================================================
+# Settings: uncensored プリセットを Instruction 一覧に含めるか
+# ================================================================================
+def uncensored_presets_visible() -> bool:
+    try:
+        from modules import shared
+
+        value = getattr(shared.opts, SETTING_SHOW_UNCENSORED_PRESETS, False)
+        if value is None:
+            return False
+        return bool(value)
+    except Exception:
+        return False
+
+
+# ================================================================================
 # GGUF パスを検証し絶対パスに解決する
 # ================================================================================
 def resolve_gguf_path(path: str) -> Path:
@@ -172,34 +188,43 @@ def resolve_gguf_path(path: str) -> Path:
 
 
 # ================================================================================
+# FROM 行用にパスをクォートする
+# ================================================================================
+def _from_line(path: Path) -> str:
+    s = str(path)
+    if " " in s:
+        return f'FROM "{s}"'
+    return f"FROM {s}"
+
+
+# ================================================================================
 # 絶対 FROM パス付きの Modelfile 本文を組み立てる
 # ================================================================================
 def build_modelfile(
     gguf_path: Path,
     *,
+    mmproj_path: Path | None = None,
     temperature: float = 0.7,
     top_p: float = 0.9,
     num_ctx: int = 8192,
     system: str | None = None,
 ) -> str:
     gguf = resolve_gguf_path(str(gguf_path))
-    # Ollama accepts absolute paths; quote if spaces.
-    from_path = str(gguf)
-    if " " in from_path:
-        from_line = f'FROM "{from_path}"'
-    else:
-        from_line = f"FROM {from_path}"
+    lines = [_from_line(gguf)]
+    if mmproj_path is not None:
+        mm = resolve_gguf_path(str(mmproj_path))
+        lines.append(_from_line(mm))
 
     sys_text = (system or _DEFAULT_SYSTEM).strip()
     # Triple-quote SYSTEM so multiline is valid Modelfile syntax.
     return (
-        f"{from_line}\n"
-        f"\n"
-        f"PARAMETER temperature {temperature}\n"
-        f"PARAMETER top_p {top_p}\n"
-        f"PARAMETER num_ctx {num_ctx}\n"
-        f"\n"
-        f'SYSTEM """{sys_text}"""\n'
+        "\n".join(lines)
+        + "\n\n"
+        + f"PARAMETER temperature {temperature}\n"
+        + f"PARAMETER top_p {top_p}\n"
+        + f"PARAMETER num_ctx {num_ctx}\n"
+        + "\n"
+        + f'SYSTEM """{sys_text}"""\n'
     )
 
 
@@ -414,6 +439,7 @@ def create_model(
     model_name: str,
     gguf_path: str,
     *,
+    mmproj_path: str | None = None,
     api_url: str | None = None,
     ollama_bin: str | None = None,
     prefer_api: bool = True,
@@ -423,13 +449,17 @@ def create_model(
         raise ValueError("Ollama model name is empty.")
 
     gguf = resolve_gguf_path(gguf_path)
-    modelfile = build_modelfile(gguf)
+    mmproj: Path | None = None
+    if mmproj_path and str(mmproj_path).strip():
+        mmproj = resolve_gguf_path(str(mmproj_path).strip())
+    modelfile = build_modelfile(gguf, mmproj_path=mmproj)
     path = write_generated_modelfile(modelfile)
 
     url = (api_url or get_setting(SETTING_API_URL, DEFAULT_OLLAMA_URL)).rstrip("/")
     bin_setting = ollama_bin if ollama_bin is not None else get_setting(SETTING_OLLAMA_BIN, "")
 
     errors: list[str] = []
+    mm_line = f"\nmmproj: {mmproj}" if mmproj else ""
 
     if prefer_api:
         try:
@@ -438,7 +468,7 @@ def create_model(
             return (
                 f"OK — Created via API\n"
                 f"Model: {name}\n"
-                f"GGUF: {gguf}\n"
+                f"GGUF: {gguf}{mm_line}\n"
                 f"Status: {status}"
             )
         except Exception as e:
@@ -449,7 +479,7 @@ def create_model(
         return (
             f"OK — Created via CLI\n"
             f"Model: {name}\n"
-            f"GGUF: {gguf}\n"
+            f"GGUF: {gguf}{mm_line}\n"
             f"Result: {cli_out}"
         )
     except Exception as e:
@@ -457,12 +487,40 @@ def create_model(
 
     # Last resort: upload blob + /api/create files (slow for large GGUF)
     try:
-        digest_msg = create_via_blob_upload(OllamaClient(url), name, gguf, modelfile)
+        digest_msg = create_via_blob_upload(
+            OllamaClient(url), name, gguf, modelfile, mmproj_path=mmproj
+        )
         return digest_msg
     except Exception as e:
         errors.append(f"Blob upload: {e}")
 
     raise OllamaError("Model create failed:\n- " + "\n- ".join(errors))
+
+
+# ================================================================================
+# ファイルを blob としてアップロードし digest を返す
+# ================================================================================
+def _upload_blob(client: OllamaClient, file_path: Path) -> str:
+    sha = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            sha.update(chunk)
+    digest = f"sha256:{sha.hexdigest()}"
+
+    import urllib.request
+
+    url = f"{client.base_url}/api/blobs/{digest}"
+    size = file_path.stat().st_size
+    with open(file_path, "rb") as f:
+        req = urllib.request.Request(url, data=f, method="PUT")
+        req.add_header("Content-Type", "application/octet-stream")
+        req.add_header("Content-Length", str(size))
+        with urllib.request.urlopen(req, timeout=3600) as resp:
+            _ = resp.read()
+    return digest
 
 
 # ================================================================================
@@ -473,32 +531,22 @@ def create_via_blob_upload(
     model_name: str,
     gguf: Path,
     modelfile: str,
+    *,
+    mmproj_path: Path | None = None,
 ) -> str:
-    sha = hashlib.sha256()
-    with open(gguf, "rb") as f:
-        while True:
-            chunk = f.read(8 * 1024 * 1024)
-            if not chunk:
-                break
-            sha.update(chunk)
-    digest = f"sha256:{sha.hexdigest()}"
-
-    # Upload blob (curl -T uses PUT)
-    import urllib.request
-
-    url = f"{client.base_url}/api/blobs/{digest}"
-    size = gguf.stat().st_size
-    with open(gguf, "rb") as f:
-        req = urllib.request.Request(url, data=f, method="PUT")
-        req.add_header("Content-Type", "application/octet-stream")
-        req.add_header("Content-Length", str(size))
-        with urllib.request.urlopen(req, timeout=3600) as resp:
-            _ = resp.read()
+    files: dict[str, str] = {}
+    digest = _upload_blob(client, gguf)
+    files[gguf.name] = digest
+    mm_info = ""
+    if mmproj_path is not None:
+        mm_digest = _upload_blob(client, mmproj_path)
+        files[mmproj_path.name] = mm_digest
+        mm_info = f"\nmmproj digest: {mm_digest}"
 
     payload = {
         "model": model_name,
         "name": model_name,
-        "files": {gguf.name: digest},
+        "files": files,
         "stream": False,
     }
     _ = modelfile  # reserved for future SYSTEM/PARAMETER injection
@@ -507,7 +555,7 @@ def create_via_blob_upload(
     return (
         f"Created via blob upload\n"
         f"Model: {model_name}\n"
-        f"Digest: {digest}\n"
+        f"Digest: {digest}{mm_info}\n"
         f"Status: {status}"
     )
 

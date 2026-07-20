@@ -13,6 +13,7 @@ from .download import (
     download_gguf,
     get_models_dir,
     gguf_path_for,
+    mmproj_path_for,
 )
 from .model_setup import (
     DEFAULT_GGUF_FILENAME,
@@ -22,6 +23,7 @@ from .model_setup import (
     SETTING_DEFAULT_GGUF,
     SETTING_DEFAULT_MODEL,
     SETTING_OLLAMA_BIN,
+    SETTING_SHOW_UNCENSORED_PRESETS,
     build_modelfile,
     connection_help,
     create_model,
@@ -45,8 +47,11 @@ from .presets import (
     DEFAULT_PRESET,
     LANG_CHOICES,
     PRESET_CHOICES,
+    default_preset_for,
     instruction_for_preset,
+    is_uncensored_preset,
     is_nsfw_preset,
+    preset_choices_for,
 )
 
 __all__ = [
@@ -62,6 +67,7 @@ __all__ = [
     "download_gguf",
     "get_models_dir",
     "gguf_path_for",
+    "mmproj_path_for",
     "DEFAULT_GGUF_FILENAME",
     "DEFAULT_MODEL_NAME",
     "DEFAULT_OLLAMA_URL",
@@ -69,6 +75,7 @@ __all__ = [
     "SETTING_DEFAULT_GGUF",
     "SETTING_DEFAULT_MODEL",
     "SETTING_OLLAMA_BIN",
+    "SETTING_SHOW_UNCENSORED_PRESETS",
     "build_modelfile",
     "connection_help",
     "create_model",
@@ -88,6 +95,9 @@ __all__ = [
     "DEFAULT_PRESET",
     "LANG_CHOICES",
     "PRESET_CHOICES",
+    "default_preset_for",
     "instruction_for_preset",
+    "is_uncensored_preset",
     "is_nsfw_preset",
+    "preset_choices_for",
 ]

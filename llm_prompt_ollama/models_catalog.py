@@ -37,6 +37,17 @@ def _normalize_entry(raw: dict[str, Any]) -> dict[str, str] | None:
         if val is None or str(val).strip() == "":
             return None
         out[key] = str(val).strip()
+    # Optional multimodal projector file in the same hf_repo.
+    mmproj = str(raw.get("hf_mmproj") or "").strip()
+    if mmproj:
+        out["hf_mmproj"] = mmproj
+    modality = str(raw.get("modality") or "").strip().lower()
+    if modality in ("text", "vision"):
+        out["modality"] = modality
+    elif mmproj:
+        out["modality"] = "vision"
+    else:
+        out["modality"] = "text"
     return out
 
 

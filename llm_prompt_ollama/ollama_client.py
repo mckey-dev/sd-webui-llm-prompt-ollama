@@ -220,16 +220,20 @@ class OllamaClient:
         user_content: str,
         *,
         system: str | None = None,
+        images: list[str] | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
         num_predict: int | None = None,
         think: bool = False,
         timeout: float = 300.0,
     ) -> str:
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if system and system.strip():
             messages.append({"role": "system", "content": system.strip()})
-        messages.append({"role": "user", "content": user_content})
+        user_msg: dict[str, Any] = {"role": "user", "content": user_content}
+        if images:
+            user_msg["images"] = list(images)
+        messages.append(user_msg)
 
         options: dict[str, Any] = {}
         if temperature is not None:
@@ -274,6 +278,8 @@ class OllamaClient:
             "prompt": gen_prompt,
             "stream": False,
         }
+        if images:
+            gen_payload["images"] = list(images)
         if options:
             gen_payload["options"] = options
         gen_with_think = {**gen_payload, "think": bool(think)}

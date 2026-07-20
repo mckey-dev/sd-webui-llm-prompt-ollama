@@ -52,10 +52,31 @@ def gguf_path_for(model_id: str | None = None) -> Path:
 
 
 # ================================================================================
+# カタログモデル ID に対応する mmproj パスを返す（無ければ None）
+# ================================================================================
+def mmproj_path_for(model_id: str | None = None) -> Path | None:
+    entry = require_model(model_id)
+    name = (entry.get("hf_mmproj") or "").strip()
+    if not name:
+        return None
+    return get_models_dir() / name
+
+
+# ================================================================================
 # カタログ既定モデルの GGUF パスを返す
 # ================================================================================
 def default_gguf_path() -> Path:
     return gguf_path_for(None)
+
+
+# ================================================================================
+# 単一ファイルの有無を status 行に整形する
+# ================================================================================
+def _file_status_line(label: str, path: Path) -> str:
+    if path.is_file():
+        size_gb = path.stat().st_size / (1024 ** 3)
+        return f"{label}: Found {path} ({size_gb:.2f} GB)"
+    return f"{label}: Not downloaded yet. Will save to: {path}"
 
 
 # ================================================================================
@@ -64,12 +85,55 @@ def default_gguf_path() -> Path:
 def describe_gguf_status(model_id: str | None = None) -> str:
     entry = require_model(model_id)
     path = gguf_path_for(entry["id"])
-    if path.is_file():
+    lines = [_file_status_line("GGUF", path)]
+    mmproj = mmproj_path_for(entry["id"])
+    if mmproj is not None:
+        lines.append(_file_status_line("mmproj", mmproj))
+    lines.append(f"Source: https://huggingface.co/{entry['hf_repo']}")
+    return "\n".join(lines)
+
+
+# ================================================================================
+# 1 ファイルを HF から取得する（hf_hub → urllib）
+# ================================================================================
+def _download_one_file(
+    dest_dir: Path,
+    *,
+    hf_repo: str,
+    hf_file: str,
+    force: bool = False,
+) -> tuple[Path, str]:
+    existing = dest_dir / hf_file
+    if existing.is_file() and not force and existing.stat().st_size > 1_000_000:
+        size_gb = existing.stat().st_size / (1024 ** 3)
+        return existing.resolve(), f"Already present ({size_gb:.2f} GB): {existing.resolve()}"
+
+    errors: list[str] = []
+    try:
+        path = _download_via_hf_hub(
+            dest_dir, hf_repo=hf_repo, hf_file=hf_file, force=force
+        )
         size_gb = path.stat().st_size / (1024 ** 3)
-        return f"Found: {path} ({size_gb:.2f} GB)"
-    return (
-        f"Not downloaded yet. Will save to: {path}\n"
-        f"Source: https://huggingface.co/{entry['hf_repo']}"
+        return path, f"Downloaded via huggingface_hub ({size_gb:.2f} GB): {path}"
+    except Exception as e:
+        errors.append(f"huggingface_hub: {e}")
+
+    try:
+        path = _download_via_urllib(
+            dest_dir, hf_repo=hf_repo, hf_file=hf_file, force=force
+        )
+        size_gb = path.stat().st_size / (1024 ** 3)
+        return path, (
+            f"Downloaded via HTTP ({size_gb:.2f} GB): {path}\n"
+            f"URL: {_hf_resolve_url(hf_repo, hf_file)}"
+        )
+    except Exception as e:
+        errors.append(f"urllib: {e}")
+
+    raise RuntimeError(
+        f"Download failed for {hf_file}:\n- "
+        + "\n- ".join(errors)
+        + f"\nManual: https://huggingface.co/{hf_repo}"
     )
 
 
@@ -157,52 +221,28 @@ def _download_via_urllib(
 
 
 # ================================================================================
-# カタログモデルの GGUF を models/llm 等へダウンロードする
+# カタログモデルの GGUF（＋任意 mmproj）を models/llm 等へダウンロードする
 # ================================================================================
 def download_gguf(model_id: str | None = None, *, force: bool = False) -> tuple[Path, str]:
     entry = require_model(model_id)
     hf_repo = entry["hf_repo"]
     hf_file = entry["hf_file"]
     dest_dir = get_models_dir()
-    existing = dest_dir / hf_file
-    if existing.is_file() and not force and existing.stat().st_size > 1_000_000:
-        size_gb = existing.stat().st_size / (1024 ** 3)
-        return existing.resolve(), (
-            f"Already present ({size_gb:.2f} GB):\n{existing.resolve()}\n"
-            f"Source: https://huggingface.co/{hf_repo}"
-        )
+    messages: list[str] = [f"Repo: {hf_repo}"]
 
-    errors: list[str] = []
-
-    try:
-        path = _download_via_hf_hub(
-            dest_dir, hf_repo=hf_repo, hf_file=hf_file, force=force
-        )
-        size_gb = path.stat().st_size / (1024 ** 3)
-        return path, (
-            f"Downloaded via huggingface_hub ({size_gb:.2f} GB):\n{path}\n"
-            f"Repo: {hf_repo}\nFile: {hf_file}"
-        )
-    except Exception as e:
-        errors.append(f"huggingface_hub: {e}")
-
-    try:
-        path = _download_via_urllib(
-            dest_dir, hf_repo=hf_repo, hf_file=hf_file, force=force
-        )
-        size_gb = path.stat().st_size / (1024 ** 3)
-        return path, (
-            f"Downloaded via HTTP ({size_gb:.2f} GB):\n{path}\n"
-            f"URL: {_hf_resolve_url(hf_repo, hf_file)}"
-        )
-    except Exception as e:
-        errors.append(f"urllib: {e}")
-
-    raise RuntimeError(
-        "GGUF download failed:\n- "
-        + "\n- ".join(errors)
-        + f"\nManual: https://huggingface.co/{hf_repo}"
+    path, msg = _download_one_file(
+        dest_dir, hf_repo=hf_repo, hf_file=hf_file, force=force
     )
+    messages.append(f"GGUF: {msg}")
+
+    mmproj_name = (entry.get("hf_mmproj") or "").strip()
+    if mmproj_name:
+        _, mm_msg = _download_one_file(
+            dest_dir, hf_repo=hf_repo, hf_file=mmproj_name, force=force
+        )
+        messages.append(f"mmproj: {mm_msg}")
+
+    return path, "\n".join(messages)
 
 
 # ================================================================================
