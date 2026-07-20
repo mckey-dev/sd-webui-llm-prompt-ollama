@@ -2,19 +2,6 @@
 # llm_prompt_ollama パッケージの公開 API を再エクスポートする
 # ================================================================================
 from .ollama_client import OllamaClient, OllamaError
-from .download import (
-    HF_GGUF_FILENAME,
-    HF_REPO_ID,
-    SETTING_MODELS_DIR,
-    default_gguf_path,
-    default_models_dir,
-    describe_gguf_status,
-    download_default_gguf,
-    download_gguf,
-    get_models_dir,
-    gguf_path_for,
-    mmproj_path_for,
-)
 from .model_setup import (
     DEFAULT_GGUF_FILENAME,
     DEFAULT_MODEL_NAME,
@@ -30,7 +17,21 @@ from .model_setup import (
     extension_root,
     find_ollama_bin,
     get_setting,
+    restart_ollama_serve,
     start_ollama_serve,
+)
+from .download import (
+    HF_GGUF_FILENAME,
+    HF_REPO_ID,
+    SETTING_MODELS_DIR,
+    default_gguf_path,
+    default_models_dir,
+    describe_gguf_status,
+    download_default_gguf,
+    download_gguf,
+    get_models_dir,
+    gguf_path_for,
+    mmproj_path_for,
 )
 from .models_catalog import (
     choices_for_ui,
@@ -82,6 +83,7 @@ __all__ = [
     "extension_root",
     "find_ollama_bin",
     "get_setting",
+    "restart_ollama_serve",
     "start_ollama_serve",
     "choices_for_ui",
     "default_model",

@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,54 @@ def _clean_cli_text(text: str) -> str:
     if success_lines and not error_lines:
         return "success"
     return "\n".join(keep)
+
+
+# ================================================================================
+# Ollama の GGUF 検証（llama-quantize）失敗かどうか
+# ================================================================================
+def _is_gguf_validate_failure(message: str) -> bool:
+    low = (message or "").lower()
+    return (
+        "llama-quantize" in low
+        or "validate gguf" in low
+        or "compatibility patches" in low
+    )
+
+
+def _gguf_validate_user_message(detail: str, *, gguf_path: Path | str | None = None) -> str:
+    extra = ""
+    path_hint = str(gguf_path or "").lower()
+    detail_low = detail.lower()
+    is_qwen35_gguf = (
+        "qwen3.5" in path_hint
+        or "qwen_qwen3.5" in path_hint
+        or ("qwen" in path_hint and "3.5" in path_hint)
+        or "qwen3.5" in detail_low
+        or "qwen_qwen3.5" in detail_low
+    )
+    if is_qwen35_gguf:
+        extra = (
+            "\n\n【Qwen3.5 + ローカル GGUF】\n"
+            "bartowski 等の Qwen3.5 GGUF を Ollama に import すると、0.32 系でも "
+            "llama-quantize 検証で落ちることがあります（Ollama 側の既知系）。\n"
+            "回避: 公式ライブラリから pull し、Create / Download は使わない。\n"
+            "  ollama pull qwen3.5:9b\n"
+            "  Settings → Default Ollama model name を `qwen3.5:9b` に\n"
+            "  モデルロードの Ollama model name も `qwen3.5:9b` を選択して Generate\n"
+        )
+    return (
+        "Ollama がこの GGUF を検証できませんでした（llama-quantize / compatibility patches）。\n"
+        "blob の転送はできていますが、Ollama 側がモデル登録を拒否しています。"
+        "拡張の不具合ではなく、Ollama と GGUF の組み合わせの問題です。\n\n"
+        "対処:\n"
+        "1. Ollama を最新版に更新（`ollama -v` → 公式 install.sh 等）\n"
+        "2. ローカル GGUF の Create が続く場合 → `ollama pull qwen3.5:9b` 等の公式モデルを使う\n"
+        "3. カスタム Uncensored / 第三者 mmproj は create 不可のことがある\n"
+        "4. Linux / notebook: ollama 付近に llama-server があるか（不完全インストールで GGUF import が壊れる）\n"
+        f"{extra}\n"
+        f"サーバー応答: {detail.strip()}"
+    )
+
 
 _DEFAULT_SYSTEM = (
     "You are an expert Stable Diffusion prompt engineer.\n"
@@ -300,23 +349,16 @@ def connection_help(api_url: str, *, ollama_bin: str | None = None) -> str:
 
 
 # ================================================================================
-# API 停止時に ollama serve をバックグラウンド起動する
+# ollama serve プロセスを起動し API 応答を待つ（既存サーバー有無は見ない）
 # ================================================================================
-def start_ollama_serve(
+def _spawn_ollama_serve(
     *,
     api_url: str | None = None,
     ollama_bin: str | None = None,
     wait_seconds: float = 8.0,
 ) -> str:
-    import time
-
     url = (api_url or get_setting(SETTING_API_URL, DEFAULT_OLLAMA_URL)).rstrip("/")
     client = OllamaClient(url, timeout=5.0)
-    try:
-        status = client.health()
-        return f"Already running.\n{status}"
-    except OllamaError:
-        pass
 
     bin_path = find_ollama_bin(ollama_bin or get_setting(SETTING_OLLAMA_BIN, "") or None)
     if not bin_path:
@@ -333,7 +375,6 @@ def start_ollama_serve(
         log_f = subprocess.DEVNULL
 
     env = os.environ.copy()
-    # Ensure local API binds as expected in notebooks / headless hosts
     env.setdefault("OLLAMA_HOST", "127.0.0.1:11434")
 
     creationflags = 0
@@ -361,11 +402,12 @@ def start_ollama_serve(
     while time.time() < deadline:
         time.sleep(0.5)
         try:
-            status = client.health()
-            return (
-                f"Started ollama serve ({bin_path}).\n"
-                f"Log: {log_path}\n"
-                f"{status}"
+            return _ollama_health_message(
+                client,
+                prefix=(
+                    f"Started ollama serve ({bin_path}).\n"
+                    f"Log: {log_path}"
+                ),
             )
         except OllamaError as e:
             last_err = str(e)
@@ -375,6 +417,200 @@ def start_ollama_serve(
         f"Last error: {last_err}\n"
         f"Check log: {log_path}"
     )
+
+
+# ================================================================================
+# Linux: systemd の ollama ユニットを restart する（存在・active 時のみ）
+# ================================================================================
+def _linux_systemctl_restart_ollama() -> tuple[bool, str]:
+    if not sys.platform.startswith("linux"):
+        return False, ""
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return False, ""
+    for user_flag in ("--user", ""):
+        prefix = [systemctl]
+        if user_flag:
+            prefix.append(user_flag)
+        check = prefix + ["is-active", "--quiet", "ollama"]
+        try:
+            chk = subprocess.run(
+                check,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if chk.returncode != 0:
+            continue
+        restart = prefix + ["restart", "ollama"]
+        label = "systemctl --user restart ollama" if user_flag else "systemctl restart ollama"
+        try:
+            res = subprocess.run(
+                restart,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, f"{label} failed: {e}"
+        if res.returncode == 0:
+            return True, label
+        err = (res.stderr or res.stdout or "").strip()
+        return False, f"{label} failed (code {res.returncode}): {err}"
+    return False, ""
+
+
+# ================================================================================
+# Linux: 拡張 / install.py が起動した ollama serve プロセスを止める
+# ================================================================================
+def _linux_stop_ollama_serve_processes() -> str:
+    if not sys.platform.startswith("linux"):
+        return ""
+    pkill = shutil.which("pkill")
+    if not pkill:
+        return ""
+    subprocess.run(
+        [pkill, "-f", "ollama serve"],
+        capture_output=True,
+        timeout=15,
+    )
+    return "pkill -f 'ollama serve'"
+
+
+# ================================================================================
+# Windows: ollama.exe プロセスを終了する
+# ================================================================================
+def _windows_stop_ollama_processes() -> str:
+    if os.name != "nt":
+        return ""
+    taskkill = shutil.which("taskkill")
+    if not taskkill:
+        return ""
+    subprocess.run(
+        [taskkill, "/F", "/IM", "ollama.exe"],
+        capture_output=True,
+        timeout=30,
+    )
+    return "taskkill /F /IM ollama.exe"
+
+
+# ================================================================================
+# 接続ステータス文言（カタログ分割 + Loaded in memory）
+# ================================================================================
+def _ollama_health_message(client: OllamaClient, *, prefix: str | None = None) -> str:
+    from .models_catalog import catalog_ollama_names
+
+    return client.health(catalog_ollama_names=catalog_ollama_names(), prefix=prefix)
+
+
+# ================================================================================
+# API 応答が落ちるまで短時間待つ
+# ================================================================================
+def _wait_for_api_down(client: OllamaClient, *, attempts: int = 40) -> bool:
+    for _ in range(attempts):
+        try:
+            client.list_models()
+            time.sleep(0.25)
+        except OllamaError:
+            return True
+    return False
+
+
+# ================================================================================
+# API 停止時に ollama serve をバックグラウンド起動する
+# ================================================================================
+def start_ollama_serve(
+    *,
+    api_url: str | None = None,
+    ollama_bin: str | None = None,
+    wait_seconds: float = 8.0,
+) -> str:
+    url = (api_url or get_setting(SETTING_API_URL, DEFAULT_OLLAMA_URL)).rstrip("/")
+    client = OllamaClient(url, timeout=5.0)
+    try:
+        return _ollama_health_message(client, prefix="Already running.")
+    except OllamaError:
+        pass
+
+    return _spawn_ollama_serve(
+        api_url=url,
+        ollama_bin=ollama_bin,
+        wait_seconds=wait_seconds,
+    )
+
+
+# ================================================================================
+# Ollama サーバーを再起動する（Linux: systemctl → pkill → serve）
+# ================================================================================
+def restart_ollama_serve(
+    *,
+    api_url: str | None = None,
+    ollama_bin: str | None = None,
+    wait_seconds: float = 12.0,
+) -> str:
+    url = (api_url or get_setting(SETTING_API_URL, DEFAULT_OLLAMA_URL)).rstrip("/")
+    client = OllamaClient(url, timeout=5.0)
+    steps: list[str] = []
+
+    if sys.platform.startswith("linux"):
+        ok, sys_msg = _linux_systemctl_restart_ollama()
+        if ok:
+            steps.append(sys_msg)
+            deadline = time.time() + max(1.0, float(wait_seconds))
+            last_err = "timeout"
+            while time.time() < deadline:
+                time.sleep(0.5)
+                try:
+                    return _ollama_health_message(
+                        client,
+                        prefix="Restarted.\n" + "\n".join(steps),
+                    )
+                except OllamaError as e:
+                    last_err = str(e)
+            raise OllamaError(
+                "Restarted via systemd but API still unreachable.\n"
+                + "\n".join(steps)
+                + f"\nLast error: {last_err}"
+            )
+        if sys_msg:
+            steps.append(f"(systemd skipped/failed: {sys_msg})")
+
+        stop_msg = _linux_stop_ollama_serve_processes()
+        if stop_msg:
+            steps.append(stop_msg)
+            if not _wait_for_api_down(client):
+                raise OllamaError(
+                    "Could not stop existing Ollama (API still responding after pkill).\n"
+                    + "\n".join(steps)
+                    + "\nIf ollama runs under systemd: sudo systemctl restart ollama\n"
+                    "Otherwise free port 11434, then use Start Ollama."
+                )
+    elif os.name == "nt":
+        stop_msg = _windows_stop_ollama_processes()
+        if stop_msg:
+            steps.append(stop_msg)
+            if not _wait_for_api_down(client):
+                raise OllamaError(
+                    "Could not stop Ollama (API still responding after taskkill).\n"
+                    + "\n".join(steps)
+                    + "\nQuit Ollama from the system tray, then use Start Ollama."
+                )
+        else:
+            steps.append("(taskkill not found on PATH)")
+    else:
+        steps.append("Stop step is optimized for Linux/Windows; starting a new serve anyway.")
+
+    _spawn_ollama_serve(
+        api_url=url,
+        ollama_bin=ollama_bin,
+        wait_seconds=wait_seconds,
+    )
+    prefix = "Restarted.\n" + "\n".join(steps) if steps else "Restarted."
+    return _ollama_health_message(client, prefix=prefix)
 
 
 # ================================================================================
@@ -419,6 +655,12 @@ def create_via_cli(
     if completed.returncode != 0:
         raise OllamaError(
             f"ollama create failed (code {completed.returncode}):\n{out or '(no output)'}"
+            + (
+                "\nHint: If you see llama-quantize / GGUF validate errors, upgrade Ollama "
+                "or try the default models.json Qwen entries before custom Uncensored/mmproj GGUF."
+                if "llama-quantize" in (out or "").lower() or "validate gguf" in (out or "").lower()
+                else ""
+            )
         )
     return out or f"Created model '{model_name}' via CLI"
 
@@ -505,6 +747,7 @@ def create_model(
         mmproj = resolve_gguf_path(str(mmproj_path).strip())
     modelfile = build_modelfile(gguf, mmproj_path=mmproj)
     path = write_generated_modelfile(modelfile)
+    system_extra, params_extra = _parse_modelfile_extras(modelfile)
 
     url = (api_url or get_setting(SETTING_API_URL, DEFAULT_OLLAMA_URL)).rstrip("/")
     bin_setting = ollama_bin if ollama_bin is not None else get_setting(SETTING_OLLAMA_BIN, "")
@@ -525,7 +768,10 @@ def create_model(
                 f"Status: {status}"
             )
         except Exception as e:
+            err = str(e)
             errors.append(f"API (files): {e}")
+            if _is_gguf_validate_failure(err):
+                raise OllamaError(_gguf_validate_user_message(err, gguf_path=gguf)) from e
         try:
             client = OllamaClient(url)
             status = create_via_api(client, name, modelfile)
@@ -547,15 +793,46 @@ def create_model(
             f"Result: {cli_out}"
         )
     except Exception as e:
-        errors.append(f"CLI: {_clean_cli_text(str(e)) or e}")
+        err = _clean_cli_text(str(e)) or str(e)
+        errors.append(f"CLI: {err}")
+        if _is_gguf_validate_failure(err):
+            raise OllamaError(_gguf_validate_user_message(err, gguf_path=gguf)) from e
+
+    # CLI may have pushed blobs before GGUF validate failed — register model via API only.
+    try:
+        client = OllamaClient(url)
+        status = create_via_blob_upload(
+            client,
+            name,
+            gguf,
+            system=system_extra,
+            parameters=params_extra or None,
+            mmproj_path=mmproj,
+        )
+        return (
+            f"OK — Created via API after CLI blob copy\n"
+            f"Model: {name}\n"
+            f"GGUF: {gguf}{mm_line}\n"
+            f"Status: {status}"
+        )
+    except Exception as e:
+        err = str(e)
+        errors.append(f"API (files, after CLI): {e}")
+        if _is_gguf_validate_failure(err):
+            raise OllamaError(_gguf_validate_user_message(err, gguf_path=gguf)) from e
+
+    if errors and all(_is_gguf_validate_failure(x) for x in errors):
+        raise OllamaError(
+            _gguf_validate_user_message(errors[0].split(": ", 1)[-1], gguf_path=gguf)
+        )
 
     raise OllamaError("Model create failed:\n- " + "\n- ".join(errors))
 
 
 # ================================================================================
-# ファイルを blob としてアップロードし digest を返す
+# ファイルの SHA256 digest（sha256:...）を返す
 # ================================================================================
-def _upload_blob(client: OllamaClient, file_path: Path, *, retries: int = 3) -> str:
+def _file_digest(file_path: Path) -> str:
     sha = hashlib.sha256()
     with open(file_path, "rb") as f:
         while True:
@@ -563,7 +840,64 @@ def _upload_blob(client: OllamaClient, file_path: Path, *, retries: int = 3) -> 
             if not chunk:
                 break
             sha.update(chunk)
-    digest = f"sha256:{sha.hexdigest()}"
+    return f"sha256:{sha.hexdigest()}"
+
+
+# ================================================================================
+# Ollama サーバー上に blob が既にあるか HEAD で確認する
+# ================================================================================
+def _blob_exists(client: OllamaClient, digest: str) -> bool:
+    import urllib.error
+    import urllib.request
+
+    url = f"{client.base_url}/api/blobs/{digest}"
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return int(getattr(resp, "status", 200) or 200) == 200
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise OllamaError(f"HEAD /api/blobs failed ({e.code}): {e.reason}") from e
+    except urllib.error.URLError as e:
+        raise OllamaError(f"HEAD /api/blobs unreachable: {e.reason}") from e
+
+
+# ================================================================================
+# curl -T で blob を push する（urllib より安定することがある）
+# ================================================================================
+def _upload_blob_curl(client: OllamaClient, file_path: Path, digest: str) -> None:
+    curl = shutil.which("curl")
+    if not curl:
+        raise OllamaError("curl not found (needed for blob upload fallback)")
+    url = f"{client.base_url}/api/blobs/{digest}"
+    cmd = [curl, "-sfS", "--max-time", "7200", "-T", str(file_path), "-X", "POST", url]
+    try:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=7300,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise OllamaError(f"curl blob upload timed out for {file_path.name}") from e
+    if completed.returncode != 0:
+        err = (completed.stderr or completed.stdout or "").strip()
+        raise OllamaError(
+            f"curl blob upload failed for {file_path.name} (code {completed.returncode}): {err}"
+        )
+
+
+# ================================================================================
+# ファイルを blob としてアップロードし digest を返す
+# ================================================================================
+def _upload_blob(client: OllamaClient, file_path: Path, *, retries: int = 3) -> str:
+    digest = _file_digest(file_path)
+    if _blob_exists(client, digest):
+        return digest
 
     import urllib.error
     import urllib.request
@@ -584,7 +918,14 @@ def _upload_blob(client: OllamaClient, file_path: Path, *, retries: int = 3) -> 
             last_err = e
             if attempt + 1 < retries:
                 time.sleep(2.0 * (attempt + 1))
-    raise OllamaError(f"Blob upload failed for {file_path.name}: {last_err}") from last_err
+
+    try:
+        _upload_blob_curl(client, file_path, digest)
+        return digest
+    except OllamaError as e:
+        raise OllamaError(
+            f"Blob upload failed for {file_path.name}: {last_err}; curl fallback: {e}"
+        ) from e
 
 
 # ================================================================================
@@ -600,11 +941,11 @@ def create_via_blob_upload(
     mmproj_path: Path | None = None,
 ) -> str:
     files: dict[str, str] = {}
+    digest = _upload_blob(client, gguf)
+    files[gguf.name] = digest
     if mmproj_path is not None:
         mm_digest = _upload_blob(client, mmproj_path)
         files[mmproj_path.name] = mm_digest
-    digest = _upload_blob(client, gguf)
-    files[gguf.name] = digest
     mm_info = f"\nmmproj digest: {files[mmproj_path.name]}" if mmproj_path is not None else ""
 
     payload: dict[str, Any] = {
@@ -618,7 +959,14 @@ def create_via_blob_upload(
         payload["parameters"] = parameters
     data = client._request("POST", "/api/create", payload, timeout=7200.0)
     if isinstance(data, dict) and data.get("error"):
-        raise OllamaError(str(data["error"]))
+        err = str(data["error"])
+        hint = ""
+        if "llama-quantize" in err.lower() or "gguf" in err.lower():
+            hint = (
+                "\nHint: This GGUF may need a newer Ollama build, or the file may be unsupported. "
+                "Try `ollama -v` and upgrade, or use the catalog Qwen GGUF without custom mmproj."
+            )
+        raise OllamaError(err + hint)
     status = data.get("status") if isinstance(data, dict) else data
     return (
         f"Created via blob upload\n"
