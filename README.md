@@ -248,9 +248,9 @@ JSON の構文エラーがあると読み込みに失敗し、最小限の組み
 ## モデル作成の仕組み
 
 1. 拡張が `.Modelfile.generated` を書き出す（`FROM` に GGUF の絶対パス）
-2. まず Ollama **`POST /api/create`** を試す
-3. 失敗したら **`ollama create <name> -f .Modelfile.generated`**
-4. それでも失敗したら GGUF の blob アップロード経由を試す（大きいファイルでは時間がかかります）
+2. まず GGUF を **`POST /api/blobs/:digest`** で送り、**`POST /api/create`** に `files`・`system`・`parameters` を渡す（Ollama 0.5.5+）
+3. 失敗時は **`ollama create <name> -f .Modelfile.generated`**（CLI）
+4. さらに古い Ollama 向けに Modelfile 文字列での `/api/create` を試す
 
 テンプレートは拡張直下の `Modelfile` です。
 
@@ -294,6 +294,9 @@ extensions/sd-webui-llm-prompt-ollama/
 | ollama CLI not found | Ollama を入れ直すか Settings でバイナリパスを指定 |
 | Download / Create が押せない | `models.json` が無い・不正・有効モデル 0 件。ファイルを直して **更新** |
 | Create failed / architecture error | 当該 GGUF がお使いの Ollama 版で未対応の可能性。Ollama を最新化 |
+| Create: `neither 'from' or 'files' was specified` | Ollama **0.5.5 以降**の API 変更。拡張は GGUF を blob 経由で登録します。**拡張を最新化**して再試行 |
+| Create: `llama-quantize` / GGUF validate 失敗 | Ollama と GGUF の組み合わせ問題。Ollama を更新、別量子化の GGUF を試す、CLI 失敗時は API（blob）経路のログを確認 |
+| Blob upload: Connection reset | 大きい GGUF（数 GB）のアップロード中断。ネットワーク・リバースプロキシのタイムアウトを延ばす、同一マシンで Ollama を動かす |
 | Generate が遅い・VRAM 不足 | SD と同時利用だと重い。SD モデルの Unload や Ollama 側 GPU 設定を調整 |
 | 追加したプリセットが一覧に出ない | `presets.json` の **JSON 構文**を確認（1 文字の `"` 余りでも全体が読めません）。修正後 **更新** |
 | `(Uncensored)` プリセットが出ない | Settings で **Show uncensored instruction presets** を ON → Apply → Idea/VLM **更新** |

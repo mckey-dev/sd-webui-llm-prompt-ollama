@@ -8,7 +8,9 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
+from typing import Any
 
 from .ollama_client import OllamaClient, OllamaError
 
@@ -422,7 +424,34 @@ def create_via_cli(
 
 
 # ================================================================================
-# /api/create で Modelfile からモデルを作成する
+# Modelfile から SYSTEM / PARAMETER を抽出する
+# ================================================================================
+def _parse_modelfile_extras(modelfile: str) -> tuple[str | None, dict[str, Any]]:
+    system: str | None = None
+    params: dict[str, Any] = {}
+    m = re.search(r'SYSTEM\s+"""(.*?)"""', modelfile, re.DOTALL)
+    if m:
+        system = m.group(1).strip()
+    for line in modelfile.splitlines():
+        line = line.strip()
+        if not line.startswith("PARAMETER "):
+            continue
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3:
+            continue
+        key, raw = parts[1], parts[2]
+        try:
+            if "." in raw:
+                params[key] = float(raw)
+            else:
+                params[key] = int(raw)
+        except ValueError:
+            params[key] = raw
+    return system, params
+
+
+# ================================================================================
+# /api/create で Modelfile からモデルを作成する（Ollama < 0.5.5 向け）
 # ================================================================================
 def create_via_api(
     client: OllamaClient,
@@ -430,6 +459,28 @@ def create_via_api(
     modelfile: str,
 ) -> str:
     return client.create_from_modelfile(model_name, modelfile, stream=False, timeout=600.0)
+
+
+# ================================================================================
+# ローカル GGUF を blob 経由で登録する（Ollama >= 0.5.5 の /api/create）
+# ================================================================================
+def create_from_local_gguf_api(
+    client: OllamaClient,
+    model_name: str,
+    gguf: Path,
+    modelfile: str,
+    *,
+    mmproj_path: Path | None = None,
+) -> str:
+    system, parameters = _parse_modelfile_extras(modelfile)
+    return create_via_blob_upload(
+        client,
+        model_name,
+        gguf,
+        system=system,
+        parameters=parameters or None,
+        mmproj_path=mmproj_path,
+    )
 
 
 # ================================================================================
@@ -464,15 +515,28 @@ def create_model(
     if prefer_api:
         try:
             client = OllamaClient(url)
-            status = create_via_api(client, name, modelfile)
+            status = create_from_local_gguf_api(
+                client, name, gguf, modelfile, mmproj_path=mmproj
+            )
             return (
-                f"OK — Created via API\n"
+                f"OK — Created via API (GGUF blobs)\n"
                 f"Model: {name}\n"
                 f"GGUF: {gguf}{mm_line}\n"
                 f"Status: {status}"
             )
         except Exception as e:
-            errors.append(f"API: {e}")
+            errors.append(f"API (files): {e}")
+        try:
+            client = OllamaClient(url)
+            status = create_via_api(client, name, modelfile)
+            return (
+                f"OK — Created via API (legacy modelfile)\n"
+                f"Model: {name}\n"
+                f"GGUF: {gguf}{mm_line}\n"
+                f"Status: {status}"
+            )
+        except Exception as e:
+            errors.append(f"API (modelfile): {e}")
 
     try:
         cli_out = create_via_cli(name, path, ollama_bin=bin_setting or None)
@@ -485,22 +549,13 @@ def create_model(
     except Exception as e:
         errors.append(f"CLI: {_clean_cli_text(str(e)) or e}")
 
-    # Last resort: upload blob + /api/create files (slow for large GGUF)
-    try:
-        digest_msg = create_via_blob_upload(
-            OllamaClient(url), name, gguf, modelfile, mmproj_path=mmproj
-        )
-        return digest_msg
-    except Exception as e:
-        errors.append(f"Blob upload: {e}")
-
     raise OllamaError("Model create failed:\n- " + "\n- ".join(errors))
 
 
 # ================================================================================
 # ファイルを blob としてアップロードし digest を返す
 # ================================================================================
-def _upload_blob(client: OllamaClient, file_path: Path) -> str:
+def _upload_blob(client: OllamaClient, file_path: Path, *, retries: int = 3) -> str:
     sha = hashlib.sha256()
     with open(file_path, "rb") as f:
         while True:
@@ -510,17 +565,26 @@ def _upload_blob(client: OllamaClient, file_path: Path) -> str:
             sha.update(chunk)
     digest = f"sha256:{sha.hexdigest()}"
 
+    import urllib.error
     import urllib.request
 
     url = f"{client.base_url}/api/blobs/{digest}"
     size = file_path.stat().st_size
-    with open(file_path, "rb") as f:
-        req = urllib.request.Request(url, data=f, method="PUT")
-        req.add_header("Content-Type", "application/octet-stream")
-        req.add_header("Content-Length", str(size))
-        with urllib.request.urlopen(req, timeout=3600) as resp:
-            _ = resp.read()
-    return digest
+    last_err: Exception | None = None
+    for attempt in range(max(1, retries)):
+        try:
+            with open(file_path, "rb") as f:
+                req = urllib.request.Request(url, data=f, method="POST")
+                req.add_header("Content-Type", "application/octet-stream")
+                req.add_header("Content-Length", str(size))
+                with urllib.request.urlopen(req, timeout=7200) as resp:
+                    _ = resp.read()
+            return digest
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_err = e
+            if attempt + 1 < retries:
+                time.sleep(2.0 * (attempt + 1))
+    raise OllamaError(f"Blob upload failed for {file_path.name}: {last_err}") from last_err
 
 
 # ================================================================================
@@ -530,27 +594,31 @@ def create_via_blob_upload(
     client: OllamaClient,
     model_name: str,
     gguf: Path,
-    modelfile: str,
     *,
+    system: str | None = None,
+    parameters: dict[str, Any] | None = None,
     mmproj_path: Path | None = None,
 ) -> str:
     files: dict[str, str] = {}
-    digest = _upload_blob(client, gguf)
-    files[gguf.name] = digest
-    mm_info = ""
     if mmproj_path is not None:
         mm_digest = _upload_blob(client, mmproj_path)
         files[mmproj_path.name] = mm_digest
-        mm_info = f"\nmmproj digest: {mm_digest}"
+    digest = _upload_blob(client, gguf)
+    files[gguf.name] = digest
+    mm_info = f"\nmmproj digest: {files[mmproj_path.name]}" if mmproj_path is not None else ""
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": model_name,
-        "name": model_name,
         "files": files,
         "stream": False,
     }
-    _ = modelfile  # reserved for future SYSTEM/PARAMETER injection
-    data = client._request("POST", "/api/create", payload, timeout=600.0)
+    if system:
+        payload["system"] = system
+    if parameters:
+        payload["parameters"] = parameters
+    data = client._request("POST", "/api/create", payload, timeout=7200.0)
+    if isinstance(data, dict) and data.get("error"):
+        raise OllamaError(str(data["error"]))
     status = data.get("status") if isinstance(data, dict) else data
     return (
         f"Created via blob upload\n"
