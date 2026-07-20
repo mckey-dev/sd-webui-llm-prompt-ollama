@@ -286,6 +286,15 @@ def main() -> None:
         _log("skip_install: leaving Ollama alone.")
         return
 
+    # Optional WD Tagger dependency (does not block WebUI if install fails).
+    try:
+        if launch is not None and hasattr(launch, "is_installed") and hasattr(launch, "run_pip"):
+            if not launch.is_installed("onnxruntime"):
+                _log("Installing optional dependency: onnxruntime (WD Tagger)")
+                launch.run_pip("install onnxruntime", "onnxruntime for WD Tagger")
+    except Exception as e:
+        _log(f"onnxruntime install skipped: {e}")
+
     bin_path = _find_ollama_bin()
     platform = sys.platform
 

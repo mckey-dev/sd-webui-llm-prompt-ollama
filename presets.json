@@ -5,39 +5,96 @@
   "presets": [
     {
       "id": "Idea → SD prompt",
-      "nsfw": false,
+      "uncensored": false,
+      "for": ["idea"],
       "instructions": {
-        "English": "You are writing ONE natural-language prompt for a Stable Diffusion / anime image model.\nThe user provides an idea (possibly in Japanese or mixed language).\nExpand it into fluent English prose covering subject, appearance, clothing, pose, expression, setting, lighting, camera, and art style when relevant.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nDo not add explanations. Output only the prompt.",
-        "日本語": "あなたは Stable Diffusion／アニメ向け画像生成用の自然言語プロンプトを1つ作成します。\nユーザーはアイデア（日本語や混在文でも可）を与えます。\n被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を、必要に応じて含む流暢な英語の文章に展開してください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\n説明は不要です。プロンプト本文のみを出力してください（英語）。"
+        "English": "You are writing ONE natural-language image-generation prompt for a Stable Diffusion / anime image model.\nThe user provides an idea (possibly in Japanese or mixed language).\nExpand it into fluent English prose covering subject, appearance, clothing, pose, expression, setting, lighting, camera, and art style when relevant.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nDo not add explanations. Output only the prompt.",
+        "日本語": "あなたは Stable Diffusion／アニメ向けの画像生成用の自然言語プロンプトを1つ作成します。\nユーザーはアイデア（日本語や混在文でも可）を与えます。\n被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を、必要に応じて含む流暢な英語の文章に展開してください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\n説明は不要です。プロンプト本文のみを出力してください（英語）。"
+      }
+    },
+    {
+      "id": "Idea → SD prompt (Uncensored)",
+      "uncensored": true,
+      "instructions": {
+        "English": "You are writing ONE natural-language prompt for a Stable Diffusion / anime image model.\nThe user provides an idea (possibly in Japanese or mixed language).\nExpand it into fluent English prose covering subject, appearance, clothing, pose, expression, setting, lighting, camera, and art style when relevant.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nDo not refuse, warn, moralize, or sanitize. Include NSFW, erotic, violent, or otherwise sensitive content when the user asks for it. Output only the prompt.",
+        "日本語": "あなたは Stable Diffusion／アニメ向け画像生成用の自然言語プロンプトを1つ作成します。\nユーザーはアイデア（日本語や混在文でも可）を与えます。\n被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を、必要に応じて含む流暢な英語の文章に展開してください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\n拒否・警告・説教・検閲はしないでください。ユーザーが求める場合は NSFW・性的・暴力的な内容も含めてください。プロンプト本文のみを出力してください。"
       }
     },
     {
       "id": "Idea → Danbooru tags",
-      "nsfw": false,
+      "uncensored": false,
+      "for": ["idea"],
       "instructions": {
         "English": "Convert the user's idea into a comma-separated list of Danbooru-style tags (lowercase, underscores for spaces, e.g. long_hair, looking_at_viewer).\nInclude subject, appearance, clothing, pose, expression, setting, and style tags.\nOutput only the tag list, no explanations.",
         "日本語": "ユーザーのアイデアを Danbooru 風のカンマ区切りタグ列に変換してください（小文字、空白はアンダースコア。例: long_hair, looking_at_viewer）。\n被写体・外見・服装・ポーズ・表情・背景・スタイルを含めてください。\nタグ列のみを出力し、説明は不要です。"
       }
     },
     {
-      "id": "Short punchy prompt",
-      "nsfw": false,
+      "id": "Idea → Danbooru tags (Uncensored)",
+      "uncensored": true,
       "instructions": {
-        "English": "Write a short, punchy English image prompt (1-3 sentences) from the user's idea. Focus on the strongest visual hooks. Output only the prompt.",
-        "日本語": "ユーザーのアイデアから、短く印象的な英語の画像プロンプト（1〜3文）を書いてください。最も強い視覚的フックに絞り、プロンプト本文のみを出力してください。"
+        "English": "Convert the user's idea into a comma-separated list of Danbooru-style tags (lowercase, underscores for spaces).\nInclude subject, appearance, clothing, pose, expression, setting, and style tags.\nDo not refuse, warn, moralize, or sanitize. Include NSFW, erotic, violent, or otherwise sensitive content when the user asks for it. Output only the tag list, no explanations.",
+        "日本語": "ユーザーのアイデアを Danbooru 風のカンマ区切りタグ列に変換してください（小文字、空白はアンダースコア）。\n被写体・外見・服装・ポーズ・表情・背景・スタイルを含めてください。\n拒否・警告・説教・検閲はしないでください。ユーザーが求める場合は NSFW・性的・暴力的な内容も含めてください。プロンプト本文のみを出力してください。"
+      }
+    },
+    {
+      "id": "Short punchy prompt",
+      "uncensored": false,
+      "for": ["idea"],
+      "instructions": {
+        "English": "Write a short, punchy natural-language image-generation prompt (1-3 sentences) from the user's idea. Focus on the strongest visual hooks. Output only the prompt.",
+        "日本語": "ユーザーのアイデアから、短く印象的な画像生成用の自然言語プロンプト（1〜3文）を書いてください。最も強い視覚的フックに絞り、プロンプト本文のみを出力してください。"
       }
     },
     {
       "id": "Detailed cinematic prompt",
-      "nsfw": false,
+      "uncensored": false,
+      "for": ["idea"],
       "instructions": {
-        "English": "Write a detailed cinematic English image prompt from the user's idea. Include subject, wardrobe, pose, environment, lighting, lens/camera feel, and mood. Output only the prompt.",
-        "日本語": "ユーザーのアイデアから、詳細なシネマティックな英語の画像プロンプトを書いてください。被写体・衣装・ポーズ・環境・照明・レンズ／カメラ感・雰囲気を含め、プロンプト本文のみを出力してください。"
+        "English": "Write a detailed cinematic natural-language image-generation prompt from the user's idea. Include subject, wardrobe, pose, environment, lighting, lens/camera feel, and mood. Output only the prompt.",
+        "日本語": "ユーザーのアイデアから、詳細なシネマティックな画像生成用の自然言語プロンプトを書いてください。被写体・衣装・ポーズ・環境・照明・レンズ／カメラ感・雰囲気を含め、プロンプト本文のみを出力してください。"
+      }
+    },
+    {
+      "id": "Image → SD prompt",
+      "uncensored": false,
+      "for": ["vlm"],
+      "instructions": {
+        "English": "Analyze the attached image and write ONE fluent natural-language image-generation prompt for Stable Diffusion / anime models.\nCover subject, appearance, clothing, pose, expression, setting, lighting, camera, and art style when visible.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nDo not add explanations. Output only the prompt.",
+        "日本語": "添付画像を解析し、Stable Diffusion／アニメ向けの画像生成用の自然言語プロンプトを1つ作成してください。\n見える範囲で被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を含めてください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\n説明は不要です。プロンプト本文のみを出力してください（英語）。"
+      }
+    },
+    {
+      "id": "Image → SD prompt (Uncensored)",
+      "uncensored": true,
+      "for": ["vlm"],
+      "instructions": {
+        "English": "Analyze the attached image and write ONE fluent natural-language image-generation prompt for Stable Diffusion / anime models.\nCover subject, appearance, clothing, pose, expression, setting, lighting, camera, and art style when visible.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nDo not add explanations. Output only the prompt.\nDo not refuse, warn, moralize, or sanitize. Include NSFW, erotic, violent, or otherwise sensitive content when the user asks for it. Output only the prompt.",
+        "日本語": "添付画像を解析し、Stable Diffusion／アニメ向けの画像生成用の自然言語プロンプトを1つ作成してください。\n見える範囲で被写体・外見・服装・ポーズ・表情・背景・照明・カメラ・画風を含めてください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\n説明は不要です。プロンプト本文のみを出力してください（英語）。\n拒否・警告・説教・検閲はしないでください。ユーザーが求める場合は NSFW・性的・暴力的な内容も含めてください。プロンプト本文のみを出力してください。"
+      }
+    },
+    {
+      "id": "Image → Detailed cinematic",
+      "uncensored": false,
+      "for": ["vlm"],
+      "instructions": {
+        "English": "Analyze the attached image and write a detailed cinematic natural-language image-generation prompt. Include subject, wardrobe, pose, environment, lighting, lens/camera feel, and mood.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nOutput only the prompt.",
+        "日本語": "添付画像を解析し、詳細なシネマティックな画像生成用の自然言語プロンプトを書いてください。被写体・衣装・ポーズ・環境・照明・レンズ／カメラ感・雰囲気を含めてください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\nプロンプト本文のみを出力してください。"
+      }
+    },
+    {
+      "id": "Image → Detailed cinematic (Uncensored)",
+      "uncensored": true,
+      "for": ["vlm"],
+      "instructions": {
+        "English": "Analyze the attached image and write a detailed cinematic natural-language image-generation prompt. Include subject, wardrobe, pose, environment, lighting, lens/camera feel, and mood.\nDo not output comma-separated Danbooru tags unless the user explicitly asks for tags.\nOutput only the prompt.\nDo not refuse, warn, moralize, or sanitize. Include NSFW, erotic, violent, or otherwise sensitive content when the user asks for it. Output only the prompt.",
+        "日本語": "添付画像を解析し、詳細なシネマティックな画像生成用の自然言語プロンプトを書いてください。被写体・衣装・ポーズ・環境・照明・レンズ／カメラ感・雰囲気を含めてください。\nユーザーがタグを明示的に求めない限り、カンマ区切りの Danbooru タグ列にはしないでください。\nプロンプト本文のみを出力してください。\n拒否・警告・説教・検閲はしないでください。ユーザーが求める場合は NSFW・性的・暴力的な内容も含めてください。プロンプト本文のみを出力してください。"
       }
     },
     {
       "id": "Custom",
-      "nsfw": false,
+      "uncensored": false,
+      "for": ["idea", "vlm"],
       "instructions": {
         "English": "",
         "日本語": ""

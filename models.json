@@ -3,10 +3,20 @@
   "models": [
     {
       "id": "Qwen_Qwen3.5-9B-GGUF",
-      "label": "Qwen3.5-9B-Q4_K_M.gguf (~6.2GB)",
+      "label": "Qwen3.5-9B-Q4_K_M.gguf (~6.2GB) [text]",
       "ollama_name": "Qwen3.5-9B-Q4_K_M",
       "hf_repo": "bartowski/Qwen_Qwen3.5-9B-GGUF",
-      "hf_file": "Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+      "hf_file": "Qwen_Qwen3.5-9B-Q4_K_M.gguf",
+      "modality": "text"
+    },
+    {
+      "id": "Qwen_Qwen3.5-9B-GGUF-vision",
+      "label": "Qwen3.5-9B-Q4_K_M + mmproj-bf16 (~6.2GB + ~0.9GB) [vision]",
+      "ollama_name": "Qwen3.5-9B-Q4_K_M-vision",
+      "hf_repo": "bartowski/Qwen_Qwen3.5-9B-GGUF",
+      "hf_file": "Qwen_Qwen3.5-9B-Q4_K_M.gguf",
+      "hf_mmproj": "mmproj-Qwen_Qwen3.5-9B-bf16.gguf",
+      "modality": "vision"
     }
   ]
 }
